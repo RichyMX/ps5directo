@@ -5,12 +5,13 @@
 A Windows file-transfer tool for jailbroken PS5 consoles. It sends files to the console over FTP **while they download**, without storing them on your PC. It then extracts them, either on the console with BFpilot or on the PC with 7-Zip, and places apps in `/data/homebrew` so ShadowMountPlus shows them in the menu.
 
 - ✅ Streams downloads straight to the console: nothing is saved on the PC
-- ✅ Joins split parts (.part1, .part2… / .001, .002…) and extracts RAR, 7z and ZIP
+- ✅ Works from download links, ftp:// links (e.g. a NAS) or files on your PC
+- ✅ Joins split parts (.part1, .part2… / .001, .002…) and extracts RAR, 7z, ZIP and tar (.gz/.bz2/.xz)
 - ✅ Extracts on the console (BFpilot) or on the PC (7-Zip, every file CRC-checked)
 - ✅ Fixes the file permissions that stop BFpilot-extracted content from launching (CE-107750-0)
 - ✅ Pause, resume and retry where it left off, even after a dropped connection
 - ✅ Built-in console file browser: sizes, copy, move, rename, delete, download to PC, upload
-- ✅ Send whole PC folders, skipping what's already there and resuming what got cut off
+- ✅ Send whole PC folders over several connections, skipping what's already there and resuming what got cut off
 - ✅ Watches free space so the console never fills up
 - ✅ Speed limit and built-in speed test
 - ✅ Optional browser extension: links arrive by themselves, no copy and paste

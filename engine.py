@@ -13,6 +13,7 @@ import ftplib
 import json
 import math
 import os
+import posixpath
 import re
 import socket
 import ssl
@@ -40,7 +41,12 @@ class PipeError(Exception):
 # ---------------------------------------------------------------------------
 
 ARCHIVE_RE = re.compile(
-    r"\.(part\d+\.rar|rar|r\d{2,3}|7z|7z\.\d{3}|zip|z\d{2})$", re.I)
+    r"\.(part\d+\.rar|rar|r\d{2,3}|7z|7z\.\d{3}|zip|z\d{2}|tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz)$", re.I)
+TAR_RE = re.compile(r"\.(tar|tar\.gz|tgz|tar\.bz2|tbz2?|tar\.xz|txz)$", re.I)
+
+
+def is_tar(name):
+    return bool(TAR_RE.search(name or ""))
 SPLIT_RAW_RE = re.compile(r"^(?P<base>.+)\.(?P<num>\d{3})$")
 IMAGE_EXTS = (".exfat", ".ffpkg", ".ffpfs", ".ffpfsc", ".ufs")
 
@@ -48,6 +54,7 @@ IMAGE_EXTS = (".exfat", ".ffpkg", ".ffpfs", ".ffpfsc", ".ufs")
 def display_name(name):
     """Nombre sin la parte de volumen (conserva mayusculas)."""
     for pat in (r"\.part\d+\.rar$", r"\.7z\.\d{3}$", r"\.r\d{2,3}$", r"\.z\d{2}$",
+                r"\.tar\.(gz|bz2|xz)$", r"\.(tgz|tbz2?|txz|tar)$",
                 r"\.rar$", r"\.7z$", r"\.zip$", r"\.\d{3}$"):
         new = re.sub(pat, "", name, flags=re.I)
         if new != name:
@@ -63,7 +70,8 @@ def set_key(name):
     """Nombre comun de un conjunto de volumenes (para agruparlos)."""
     n = name
     for pat in (r"\.part\d+\.rar$", r"\.7z\.\d{3}$", r"\.r\d{2,3}$",
-                r"\.z\d{2}$", r"\.rar$", r"\.7z$", r"\.zip$"):
+                r"\.z\d{2}$", r"\.tar\.(gz|bz2|xz)$", r"\.(tgz|tbz2?|txz|tar)$",
+                r"\.rar$", r"\.7z$", r"\.zip$"):
         new = re.sub(pat, "", n, flags=re.I)
         if new != n:
             return new.lower()
@@ -529,10 +537,94 @@ class FolderSource:
         return self
 
 
+class FtpSource:
+    """Un archivo en otro servidor FTP (un NAS, por ejemplo): ftp://usuario:clave@host:puerto/ruta"""
+    kind = "url"
+
+    def __init__(self, url):
+        self.original = url.strip()
+        u = urllib.parse.urlparse(self.original)
+        self.host = u.hostname or ""
+        self.port = u.port or 21
+        self.user = urllib.parse.unquote(u.username or "anonymous")
+        self.pw = urllib.parse.unquote(u.password or "")
+        self.path = urllib.parse.unquote(u.path or "/")
+        self.name = safe_name(posixpath.basename(self.path) or "archivo")
+        self.size = -1
+        self.ranges = True
+
+    def _connect(self):
+        f = ftplib.FTP()
+        f.encoding = "utf-8"
+        f.connect(self.host, self.port, timeout=30)
+        f.login(self.user, self.pw)
+        f.set_pasv(True)
+        f.voidcmd("TYPE I")
+        return f
+
+    def probe(self):
+        try:
+            f = self._connect()
+        except Exception as e:
+            raise PipeError("No puedo conectar con el FTP %s:%s (%s)" % (self.host, self.port, e))
+        try:
+            s = Ftp.size(f, self.path)
+            if s is None:
+                raise PipeError("No existe en el FTP: %s" % self.path)
+            self.size = s
+        finally:
+            try:
+                f.quit()
+            except Exception:
+                pass
+        return self
+
+    def stream(self, offset, cfg, cancel, meter):
+        tries = 0
+        while True:
+            f = None
+            try:
+                f = self._connect()
+                conn = f.transfercmd("RETR " + self.path, rest=offset or None)
+                with conn:
+                    while True:
+                        if cancel.is_set():
+                            raise Cancelled()
+                        data = conn.recv(MiB)
+                        if not data:
+                            break
+                        offset += len(data)
+                        tries = 0
+                        meter(len(data))
+                        yield data
+                try:
+                    f.voidresp()
+                except Exception:
+                    pass
+                if self.size >= 0 and offset < self.size:
+                    raise PipeError("el FTP corto la descarga")
+                return
+            except (Cancelled, GeneratorExit):
+                raise
+            except Exception as e:
+                tries += 1
+                if tries > int(cfg.get("retries", 8)):
+                    raise PipeError("Fallo al leer del FTP %s: %s" % (self.host, e))
+                time.sleep(min(30, 2 * tries))
+            finally:
+                if f is not None:
+                    try:
+                        f.close()
+                    except Exception:
+                        pass
+
+
 def make_source(text):
     text = text.strip().strip('"')
     if re.match(r"^https?://", text, re.I):
         return UrlSource(text)
+    if re.match(r"^ftp://", text, re.I):
+        return FtpSource(text)
     if os.path.isdir(text):
         return FolderSource(text)
     return FileSource(text)
@@ -577,16 +669,21 @@ def _ftp_sizes(f, path):
     return out
 
 
-def upload_tree(cfg, src, remote_root, cancel, log, progress):
+def upload_tree(cfg, src, remote_root, cancel, log, progress, workers=None):
     """Manda una FolderSource a remote_root. Salta los archivos que ya estan con el mismo
     tamano, continua los que se cortaron (mas pequenos) y vuelve a mandar los demas.
-    progress(bytes_hechos, ruta_actual). Devuelve (enviados, saltados, continuados)."""
+    Usa varias conexiones a la vez (cfg parallel_files). progress(bytes_hechos, ruta_actual).
+    Devuelve (enviados, saltados, continuados)."""
+    import queue
     by_dir = {}
     for rel, size in src.files:
         d, _, n = rel.rpartition("/")
         by_dir.setdefault(d, []).append((n, size, rel))
-    done = 0
-    sent = skipped = resumed = 0
+    workers = max(1, min(4, int(workers or cfg.get("parallel_files", 2) or 1)))
+    lock = threading.Lock()
+    st = {"done": 0, "sent": 0, "skipped": 0, "resumed": 0, "err": None}
+    tasks = queue.Queue()
+    # 1) una sola conexion: crear carpetas y ver que hay ya en la consola
     w = _FtpWriter(cfg, cancel, log)
     try:
         w.mkdir(remote_root)
@@ -597,40 +694,73 @@ def upload_tree(cfg, src, remote_root, cancel, log, progress):
             w.mkdir(rdir)
             have = w._retry(lambda: ftp_sizes(w.f, rdir)) or {}
             for name, size, rel in by_dir[d]:
-                if cancel.is_set():
-                    raise Cancelled()
-                rpath = rdir + "/" + name
                 got = have.get(name)
                 if got == size:
-                    skipped += 1
-                    done += size
-                    progress(done, rel)
+                    st["skipped"] += 1
+                    st["done"] += size
                     continue
                 offset = got if (got is not None and 0 < got < size) else 0
-                if offset:
-                    resumed += 1
-                    log("Continuando %s desde %s MB" % (rel, offset // MiB))
-                local = os.path.join(src.path, *rel.split("/"))
-                base = done
-                w.begin(rpath, offset)
-                with open(local, "rb") as fh:
-                    fh.seek(offset)
-                    pos = offset
-                    while True:
-                        if cancel.is_set():
-                            raise Cancelled()
-                        chunk = fh.read(4 * MiB)
-                        if not chunk:
-                            break
-                        w.write(chunk)
-                        pos += len(chunk)
-                        progress(base + pos, rel)
-                w.end(size)
-                done = base + size
-                sent += 1
-        return sent, skipped, resumed
+                tasks.put((rdir + "/" + name, rel, size, offset))
     finally:
         w.close()
+    progress(st["done"], "")
+    if tasks.empty():
+        return 0, st["skipped"], 0
+
+    # 2) varias conexiones subiendo archivos a la vez
+    def worker():
+        ww = _FtpWriter(cfg, cancel, log)
+        try:
+            while st["err"] is None:
+                try:
+                    rpath, rel, size, offset = tasks.get_nowait()
+                except queue.Empty:
+                    return
+                if cancel.is_set():
+                    raise Cancelled()
+                if offset:
+                    with lock:
+                        st["resumed"] += 1
+                    log("Continuando %s desde %s MB" % (rel, offset // MiB))
+                local = os.path.join(src.path, *rel.split("/"))
+                ww.begin(rpath, offset)
+                with lock:
+                    st["done"] += offset      # lo que ya habia en la consola cuenta como hecho
+                pos = offset
+                with open(local, "rb") as fh:
+                    fh.seek(offset)
+                    while True:
+                        if cancel.is_set() or st["err"] is not None:
+                            raise Cancelled()
+                        chunk = fh.read(2 * MiB)
+                        if not chunk:
+                            break
+                        ww.write(chunk)
+                        pos += len(chunk)
+                        with lock:
+                            st["done"] += len(chunk)
+                            d = st["done"]
+                        progress(d, rel)
+                ww.end(size)
+                with lock:
+                    st["sent"] += 1
+        except Exception as e:
+            with lock:
+                if st["err"] is None:
+                    st["err"] = e
+        finally:
+            ww.close()
+
+    ths = [threading.Thread(target=worker, daemon=True) for _ in range(min(workers, tasks.qsize()))]
+    for t in ths:
+        t.start()
+    for t in ths:
+        t.join()
+    if st["err"] is not None:
+        if cancel.is_set() or isinstance(st["err"], Cancelled):
+            raise Cancelled()
+        raise st["err"]
+    return st["sent"], st["skipped"], st["resumed"]
 
 
 def ftp_download(cfg, remote, local, cancel, progress, size=None):
@@ -1402,3 +1532,76 @@ def stream_extract_7z(exe, archive, entries, password, remote_root, cfg, cancel,
                 proc.kill()
             except Exception:
                 pass
+
+
+class _CountReader:
+    """Envuelve un archivo y cuenta lo leido (para el progreso del .tar.gz)."""
+    def __init__(self, f):
+        self.f, self.n = f, 0
+
+    def read(self, k=-1):
+        d = self.f.read(k)
+        self.n += len(d)
+        return d
+
+
+def stream_extract_tar(path, remote_root, cfg, cancel, log, progress, on_file=None, skip=0):
+    """Descomprime un .tar / .tar.gz / .tar.bz2 / .tar.xz del PC sobre la marcha y sube cada
+    archivo a remote_root. progress(bytes_del_comprimido_leidos, total_comprimido, ruta).
+    skip: miembros ya subidos antes (se leen y se descartan).
+    Devuelve (archivos, bytes, {ruta de sce_sys/param.json: contenido})."""
+    import tarfile
+    total = os.path.getsize(path)
+    nfiles = nbytes = 0
+    params = {}
+    w = _FtpWriter(cfg, cancel, log)
+    try:
+        with open(path, "rb") as raw:
+            cr = _CountReader(raw)
+            with tarfile.open(fileobj=cr, mode="r|*") as tf:
+                for i, m in enumerate(tf):
+                    if cancel.is_set():
+                        raise Cancelled()
+                    parts = [x for x in m.name.replace("\\", "/").split("/") if x not in ("", ".")]
+                    if not parts or ".." in parts:
+                        raise PipeError("Ruta peligrosa dentro del comprimido: %s" % m.name)
+                    remote = remote_root + "/" + "/".join(parts)
+                    rel = "/".join(parts)
+                    if m.isfile() and rel.lower().endswith("sce_sys/param.json") and m.size < MiB:
+                        params[rel] = tf.extractfile(m).read()
+                        if i < skip:
+                            continue
+                        w.begin(remote)
+                        w.write(params[rel])
+                        w.end(m.size)
+                        nfiles += 1
+                        nbytes += m.size
+                        if on_file:
+                            on_file(i + 1)
+                        continue
+                    if i < skip:
+                        continue
+                    if m.isdir():
+                        w.mkdir(remote)
+                    elif m.isfile():
+                        fh = tf.extractfile(m)
+                        w.begin(remote)
+                        while True:
+                            data = fh.read(4 * MiB)
+                            if not data:
+                                break
+                            w.write(data)
+                            progress(cr.n, total, m.name)
+                        w.end(m.size)
+                        nfiles += 1
+                        nbytes += m.size
+                    else:
+                        log("Me salto %s (enlace o archivo especial)" % m.name)
+                    if on_file:
+                        on_file(i + 1)
+                    progress(cr.n, total, m.name)
+    except tarfile.TarError as e:
+        raise PipeError("El .tar esta danado o no es un tar: %s" % e)
+    finally:
+        w.close()
+    return nfiles, nbytes, params

@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.16
+PS5 DIRECTO 1.17
 ================
 (English: see README_EN.txt)
 
@@ -162,6 +162,15 @@ de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
 
+NOVEDADES 1.17
+- Enlaces ftp:// (un NAS u otro servidor): ftp://usuario:clave@nas/ruta/archivo.rar
+  Funcionan como los enlaces normales, con reanudación.
+- Comprimidos .tar, .tar.gz, .tar.bz2 y .tar.xz: se descomprimen en el PC
+  sobre la marcha (no hace falta 7-Zip ni BFpilot).
+- Las carpetas se envían con varias conexiones a la vez (Ajustes > Partes a
+  la vez), más rápido con muchos archivos.
+- Pasos propios para los envíos de carpetas: Comparar → Enviar → Listo.
+
 NOVEDADES 1.16
 - Pestaña "Archivos de la consola": explorador con tamaños, copiar, mover,
   renombrar, borrar, bajar al PC, permisos y subir aquí.
@@ -278,7 +287,8 @@ SI ALGO FALLA
 
 ENLACES
 -------
-Funcionan los enlaces de descarga directa. Pixeldrain, Dropbox y algunos
+Funcionan los enlaces de descarga directa, y también los ftp:// de un NAS
+u otro servidor (ftp://usuario:clave@nas/ruta/archivo.rar). Pixeldrain, Dropbox y algunos
 de Mediafire y Google Drive se convierten solos. Las páginas que piden
 captcha o iniciar sesión no funcionan: copia el enlace final de descarga.
 

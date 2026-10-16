@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.16.0"
+VERSION = "1.17.0"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
 DEFAULT_REPO = "jstrdev/ps5directo"
@@ -397,7 +397,7 @@ def transfer_job(job, srcs, cancel):
         return folder_job(job, srcs[0], cancel)
     names = [s.name for s in srcs]
     archives = [s for s in srcs if E.is_archive(s.name)]
-    if archives and job_where(job) == "pc":
+    if archives and (job_where(job) == "pc" or any(E.is_tar(a.name) for a in archives)):
         return pc_extract_job(job, srcs, cancel)
     m = E.SPLIT_RAW_RE.match(srcs[0].name)
     raw_split = (not archives and len(srcs) >= 1 and m
@@ -530,8 +530,10 @@ def raw_job(job, srcs, cancel):
             target = dest + "/" + s.name
             if s.kind == "folder":
                 setj(job, phase="Enviando carpeta: %s" % s.name)
-                E.upload_tree(cfg, s, target, cancel, lambda m: jlog(job, m),
-                              lambda v, rel: prog(v))
+                sent, skipped, resumed = E.upload_tree(cfg, s, target, cancel, lambda m: jlog(job, m),
+                                                       lambda v, rel: prog(v))
+                jlog(job, "Carpeta enviada: %d archivos nuevos, %d ya estaban iguales, %d continuados"
+                     % (sent, skipped, resumed))
             else:
                 setj(job, phase="Enviando %s" % s.name)
                 E.upload(cfg, target, s.size, lambda off, s=s: s.stream(off, cfg, cancel, meter),
@@ -1072,11 +1074,12 @@ def pc_extract_job(job, srcs, cancel):
     cfg = cfg_snapshot()
     cfg["_limit_bps"] = live_limit_bps
     log = lambda m: jlog(job, m)  # noqa: E731
-    exe = E.find_7z(cfg.get("sevenzip_path"))
-    if not exe:
+    names = [s.name for s in srcs]
+    tar = any(E.is_tar(n) for n in names)
+    exe = None if tar else E.find_7z(cfg.get("sevenzip_path"))
+    if not tar and not exe:
         raise E.PipeError("Para descomprimir en el PC hace falta 7-Zip (gratis, 7-zip.org). Instalalo, "
                           "o pon la ruta de 7z.exe en Ajustes, o elige 'Descomprimir en la PS5'.")
-    names = [s.name for s in srcs]
     folder = os.path.join(pc_temp_root(cfg), E.safe_name(E.set_key(srcs[0].name)))
     dl, up = Meter(), Meter()
     phase = {"dl": True}
@@ -1098,6 +1101,9 @@ def pc_extract_job(job, srcs, cancel):
                  speed_label="Descarga al PC", sent_label="Bajado al PC", pc_step="bajar")
         local, created = fetch_to_pc(job, srcs, cfg, cancel, dl, folder)
         first = local[E.first_volume(names)]
+        if tar:
+            phase["dl"] = False
+            return pc_tar_job(job, srcs, cfg, cancel, local[names[0]], created, folder, up)
 
         # 2) Leer el indice (con contrasena si hace falta)
         setj(job, phase="Leyendo el contenido del comprimido", speed_label="", sent_label="",
@@ -1290,6 +1296,60 @@ def ftp_place(job, info, dest, cfg):
             f.quit()
         except Exception:
             pass
+
+
+def pc_tar_job(job, srcs, cfg, cancel, path, created, folder, up):
+    """.tar / .tar.gz / .tar.bz2 / .tar.xz: se descomprime en el PC con Python (sin 7-Zip)."""
+    staging = "%s/extract/%s" % (WORK_ROOT, job["id"])
+    total = os.path.getsize(path)
+    sig = "tar|%s|%d" % (os.path.basename(path), total)
+    st = _pcx_state(job)
+    skip = int(st.get("done") or 0) if st.get("sig") == sig else 0
+    bf = E.BFpilot(cfg)
+    if skip:
+        try:
+            if not bf.alive() or not bf.exists(staging):
+                skip = 0
+        except Exception:
+            skip = 0
+    free = free_space(bf)
+    if free is not None:
+        jlog(job, "Espacio libre en la PS5: %s" % human(free))
+        if free < margin_bytes():
+            raise E.PipeError("No hay sitio en la PS5: quedan %s libres y el margen es %s. Libera espacio "
+                              "y pulsa Reintentar." % (human(free), human(margin_bytes())))
+    jlog(job, "Descomprimiendo el .tar en el PC y enviando a la PS5")
+    setj(job, status="enviando", total=total, sent=0, pc_step="enviar", sent_label="Leído del comprimido",
+         speed_label="Velocidad (comprimido)", phase="Descomprimiendo en el PC y enviando a la PS5")
+    last = {"v": 0, "t": 0.0}
+
+    def progress(v, tot, name):
+        if v > last["v"]:
+            up(v - last["v"])
+            last["v"] = v
+        now = time.time()
+        if now - last["t"] > 0.5:
+            last["t"] = now
+            setj(job, sent=v, phase="Descomprimiendo en el PC y enviando: %s" % name.rsplit("/", 1)[-1][-60:])
+
+    def on_file(n):
+        _pcx_save(job, {"sig": sig, "done": n})
+    watch = start_space_watch(job, bf, cancel, "el envio")
+    try:
+        nfiles, nbytes, params = E.stream_extract_tar(path, staging, cfg, cancel, lambda m: jlog(job, m),
+                                                      progress, on_file, skip)
+    finally:
+        watch.set()
+    setj(job, sent=total)
+    jlog(job, "Enviado ya descomprimido: %d archivos, %s" % (nfiles, human(nbytes)))
+    games = []
+    for pj, raw in params.items():
+        root = pj[:-len("sce_sys/param.json")].rstrip("/")
+        if any(root == g["root"] or root.startswith(g["root"] + "/") for g in games if g["root"]):
+            continue
+        games.append({"root": root, "tid": E.title_id(raw.decode("utf-8", "replace")) or E.title_id(root)})
+    return {"mode": "pcx", "staging": staging, "hint": E.display_name(srcs[0].name), "games": games,
+            "pc_files": created, "pc_folder": folder if created else ""}
 
 
 def finish_pc_extract(job, info, bf, dest, cancel, cfg):

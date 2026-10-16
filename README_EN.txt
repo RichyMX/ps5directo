@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.16 — USER GUIDE (English)
+PS5 DIRECTO 1.17 — USER GUIDE (English)
 =======================================
 
 Paste links (or drag files from your PC) and the tool does the rest:
@@ -201,7 +201,8 @@ IF SOMETHING GOES WRONG
 
 LINKS
 -----
-Direct download links work. Pixeldrain, Dropbox and some Mediafire and
+Direct download links work, and so do ftp:// links to a NAS or another
+server (ftp://user:password@nas/path/file.rar). Pixeldrain, Dropbox and some Mediafire and
 Google Drive links are converted automatically. Pages that require a
 captcha or a login don't work directly: copy the final download link, or
 use the browser extension.
@@ -214,6 +215,9 @@ Settings and queue are stored in  %USERPROFILE%\.ps5directo
 
 WHAT'S NEW
 ----------
+1.17  ftp:// links (a NAS or other server) with resume. .tar/.tar.gz/.tar.bz2/
+      .tar.xz extracted on the PC (no 7-Zip needed). Folders upload over several
+      connections at once. Own steps for folder uploads.
 1.16  "Console files" tab (file browser: sizes, copy, move, rename, delete,
       download to PC, permissions, upload here). Send PC folders with
       resume. "Choose files…/Choose folder…" buttons. "Activity" tab.
