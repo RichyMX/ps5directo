@@ -721,15 +721,38 @@ def fm_delete(paths):
         if p.count("/") < 2:
             raise E.PipeError("Por seguridad no borro carpetas de primer nivel (%s)" % p)
 
+    def free_now():
+        try:
+            return int(bf._req("GET", "/api/fs/stat", {"path": paths[0].rsplit("/", 1)[0] or "/"},
+                               timeout=8).get("availableBytes") or 0)
+        except Exception:
+            return None
+
     def work():
+        start = free_now()
+        last = {"t": 0.0}
+
+        def tick():
+            # Borrar un juego grande tarda: ensenamos lo que se va liberando para que se vea que avanza
+            if start is None or time.time() - last["t"] < 3:
+                return
+            last["t"] = time.time()
+            now = free_now()
+            if now is not None:
+                with LOCK:
+                    FMOP["bytes_done"] = max(0, now - start)
+                    FMOP["message"] = ""
         for i, p in enumerate(paths):
             if FM_CANCEL.is_set():
                 raise E.Cancelled()
             with LOCK:
                 FMOP.update(current=p, items_done=i)
-            bf.delete(p, FM_CANCEL)
+            bf.delete(p, FM_CANCEL, on_tick=tick)
+        tick()
         with LOCK:
             FMOP["items_done"] = len(paths)
+            if FMOP["bytes_done"]:
+                FMOP["message"] = "Hecho: liberados %s" % human(FMOP["bytes_done"])
     _fm_start("delete", len(paths), work)
 
 

@@ -1257,11 +1257,16 @@ class BFpilot:
         except Exception:
             return ""
 
-    def wait_job(self, cancel, timeout=3600):
+    def wait_job(self, cancel, timeout=3600, on_tick=None):
         t0 = time.time()
         while time.time() - t0 < timeout:
             if cancel is not None and cancel.is_set():
                 raise Cancelled()
+            if on_tick is not None:
+                try:
+                    on_tick()
+                except Exception:
+                    pass
             j = self._req("GET", "/api/fs/job/status")
             if not j.get("busy"):
                 if j.get("error"):
@@ -1270,7 +1275,7 @@ class BFpilot:
             time.sleep(1)
         raise PipeError("BFpilot tarda demasiado")
 
-    def delete(self, path, cancel=None):
+    def delete(self, path, cancel=None, on_tick=None):
         for _ in range(60):
             try:
                 self._req("POST", "/api/fs/delete", form={"path": path, "recursive": "1"})
@@ -1282,7 +1287,7 @@ class BFpilot:
                 if "No such file" in str(e) or "not found" in str(e).lower():
                     return
                 raise
-        self.wait_job(cancel)
+        self.wait_job(cancel, timeout=4 * 3600, on_tick=on_tick)
 
     def du(self, path, timeout=20):
         """Tamano total de una carpeta (o archivo), o None."""
