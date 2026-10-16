@@ -21,10 +21,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.14.0"
+VERSION = "1.14.1"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
-DEFAULT_REPO = ""
+DEFAULT_REPO = "jstrdev/ps5directo"
 DATA_DIR = os.path.join(os.path.expanduser("~"), ".ps5directo")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 JOBS_FILE = os.path.join(DATA_DIR, "jobs.json")

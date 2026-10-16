@@ -142,6 +142,10 @@ de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
 
+NOVEDADES 1.14.1
+- Busca las actualizaciones en github.com/jstrdev/ps5directo sin tener
+  que configurar nada.
+
 NOVEDADES 1.14
 - Guía de bienvenida la primera vez que se abre: enseña para qué es cada
   parte. Se puede volver a ver con el botón "Guía" de arriba.
