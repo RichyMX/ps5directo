@@ -1,3 +1,4 @@
+const EN = !(navigator.language || "es").toLowerCase().startsWith("es");
 // PS5 Directo - captura de enlaces.
 // Cuando el navegador empieza a descargar un archivo comprimido o paquete (.rar, .7z, .zip, .pkg...),
 // manda el enlace FINAL (despues de redirecciones) a PS5 Directo y cancela la descarga.
@@ -58,8 +59,8 @@ async function handle(item) {
   chrome.action.setBadgeBackgroundColor({ color: "#2563eb" });
   chrome.action.setBadgeText({ text: String(n % 1000) });
   chrome.notifications.create({
-    type: "basic", iconUrl: "icon128.png", title: "Enviado a PS5 Directo",
-    message: (name || "Enlace") + " — no se descarga en el PC."
+    type: "basic", iconUrl: "icon128.png", title: EN ? "Sent to PS5 Directo" : "Enviado a PS5 Directo",
+    message: (name || (EN ? "Link" : "Enlace")) + (EN ? " — not downloaded to the PC." : " — no se descarga en el PC.")
   });
 }
 

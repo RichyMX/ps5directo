@@ -21,7 +21,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.14.1"
+VERSION = "1.16.0"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
 DEFAULT_REPO = "jstrdev/ps5directo"
@@ -112,8 +112,9 @@ def save_settings():
 # Utilidades de trabajos
 # ---------------------------------------------------------------------------
 
-def new_job(lines, password, dest, title=None, where=None):
+def new_job(lines, password, dest, title=None, where=None, raw=False):
     return {
+        "raw": bool(raw),
         "where": where if where in ("ps5", "pc") else "",
         "id": secrets.token_hex(4),
         "created": time.time(),
@@ -390,6 +391,10 @@ def transfer_job(job, srcs, cancel):
     cfg = cfg_snapshot()
     cfg["_log"] = lambda m: jlog(job, m)
     cfg["_limit_bps"] = live_limit_bps
+    if job.get("raw"):
+        return raw_job(job, srcs, cancel)
+    if srcs[0].kind == "folder":
+        return folder_job(job, srcs[0], cancel)
     names = [s.name for s in srcs]
     archives = [s for s in srcs if E.is_archive(s.name)]
     if archives and job_where(job) == "pc":
@@ -492,6 +497,468 @@ def transfer_job(job, srcs, cancel):
         stop_speed.set()
         watch.set()
         setj(job, speed=0.0, dl_speed=0.0)
+
+
+# ---------------------------------------------------------------------------
+# Envio "tal cual" (desde el explorador de la consola): sin descomprimir ni colocar
+# ---------------------------------------------------------------------------
+
+def raw_job(job, srcs, cancel):
+    cfg = cfg_snapshot()
+    cfg["_limit_bps"] = live_limit_bps
+    dest = (job.get("dest") or cfg["dest"]).rstrip("/") or "/"
+    total = sum(max(0, s.size) for s in srcs)
+    up, meter = Meter(), Meter()
+    state = {"base": 0, "last": 0}
+    stop_speed = threading.Event()
+
+    def speed_loop():
+        while not stop_speed.wait(1):
+            setj(job, speed=up.rate(), dl_speed=meter.rate())
+    threading.Thread(target=speed_loop, daemon=True).start()
+
+    def prog(v):
+        cur = state["base"] + v
+        if cur > state["last"]:
+            up(cur - state["last"])
+            state["last"] = cur
+        setj(job, sent=cur)
+    setj(job, status="enviando", total=total if total > 0 else -1, sent=0)
+    placed = []
+    try:
+        for s in srcs:
+            target = dest + "/" + s.name
+            if s.kind == "folder":
+                setj(job, phase="Enviando carpeta: %s" % s.name)
+                E.upload_tree(cfg, s, target, cancel, lambda m: jlog(job, m),
+                              lambda v, rel: prog(v))
+            else:
+                setj(job, phase="Enviando %s" % s.name)
+                E.upload(cfg, target, s.size, lambda off, s=s: s.stream(off, cfg, cancel, meter),
+                         prog, cancel, lambda m: jlog(job, m))
+            state["base"] += max(0, s.size)
+            placed.append(target)
+    finally:
+        stop_speed.set()
+        setj(job, speed=0.0, dl_speed=0.0)
+    return {"mode": "done", "placed": placed, "game": False}
+
+
+# ---------------------------------------------------------------------------
+# Historial (pestana Actividad)
+# ---------------------------------------------------------------------------
+
+HISTORY_FILE = os.path.join(DATA_DIR, "history.json")
+HISTORY_LOCK = threading.Lock()
+
+
+def record_history(job):
+    try:
+        with HISTORY_LOCK:
+            try:
+                with open(HISTORY_FILE, encoding="utf-8") as f:
+                    hist = json.load(f)
+            except Exception:
+                hist = []
+            hist.append({
+                "t": time.time(), "id": job["id"], "title": job.get("title") or "",
+                "status": job.get("status"), "size": job.get("total", -1),
+                "result": job.get("result") or [], "error": job.get("error") or "",
+                "secs": int(time.time() - float(job.get("started") or job.get("created") or time.time())),
+                "where": "raw" if job.get("raw") else ("pc" if (job.get("info") or {}).get("mode") == "pcx" else "ps5"),
+                "dest": job.get("dest") or "",
+            })
+            _save_json(HISTORY_FILE, hist[-500:])
+    except Exception:
+        traceback.print_exc()
+
+
+def read_history():
+    try:
+        with open(HISTORY_FILE, encoding="utf-8") as f:
+            return list(reversed(json.load(f)))
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Explorador de archivos de la consola
+# ---------------------------------------------------------------------------
+
+FMOP = {"busy": False, "op": "", "current": "", "items_done": 0, "items_total": 0,
+        "bytes_done": 0, "bytes_total": 0, "error": "", "message": "", "t0": 0.0, "local": ""}
+FM_CANCEL = threading.Event()
+
+
+def fm_clean(path):
+    path = "/" + "/".join(x for x in str(path or "/").replace("\\", "/").split("/") if x and x != ".")
+    if ".." in path.split("/"):
+        raise E.PipeError("Ruta no valida")
+    return path
+
+
+def fm_list(path):
+    cfg = cfg_snapshot()
+    path = fm_clean(path)
+    bf = E.BFpilot(cfg)
+    out = {"path": path, "entries": [], "free": None, "total": None, "via": "bfpilot"}
+    if bf.alive():
+        ents = bf.listdir(path)
+        out["entries"] = [{"name": e.get("name"), "dir": bool(e.get("dir")), "size": e.get("size"),
+                           "mtime": e.get("mtime"), "mode": e.get("mode")} for e in ents]
+        try:
+            st = bf._req("GET", "/api/fs/stat", {"path": path})
+            out["free"] = st.get("availableBytes")
+            out["total"] = st.get("usableTotalBytes") or st.get("totalBytes")
+        except Exception:
+            pass
+    else:
+        out["via"] = "ftp"
+        f = E.Ftp(cfg).connect()
+        try:
+            for name, facts in f.mlsd(path, facts=["type", "size", "modify", "unix.mode"]):
+                if facts.get("type") not in ("file", "dir"):
+                    continue
+                mt = facts.get("modify")
+                try:
+                    mt = int(time.mktime(time.strptime(mt[:14], "%Y%m%d%H%M%S"))) if mt else None
+                except Exception:
+                    mt = None
+                mode = facts.get("unix.mode")
+                out["entries"].append({"name": name, "dir": facts.get("type") == "dir",
+                                       "size": int(facts.get("size") or 0), "mtime": mt,
+                                       "mode": int(mode, 8) if mode else None})
+        finally:
+            try:
+                f.quit()
+            except Exception:
+                pass
+    out["entries"].sort(key=lambda e: (not e["dir"], (e["name"] or "").lower()))
+    return out
+
+
+def fm_bf():
+    bf = E.BFpilot(cfg_snapshot())
+    if not bf.alive():
+        raise E.PipeError("BFpilot no responde: cargalo para copiar, mover, borrar o calcular tamanos")
+    return bf
+
+
+def _fm_start(op, items_total, fn):
+    with LOCK:
+        if FMOP["busy"]:
+            raise E.PipeError("Ya hay una operacion en marcha en el explorador")
+        FMOP.update(busy=True, op=op, current="", items_done=0, items_total=items_total, bytes_done=0,
+                    bytes_total=0, error="", message="", t0=time.time(), local="")
+    FM_CANCEL.clear()
+
+    def run():
+        try:
+            fn()
+            with LOCK:
+                if not FMOP["message"]:
+                    FMOP["message"] = "Hecho"
+        except E.Cancelled:
+            with LOCK:
+                FMOP["error"] = "Cancelado"
+        except Exception as e:
+            traceback.print_exc()
+            with LOCK:
+                FMOP["error"] = str(e)
+        finally:
+            with LOCK:
+                FMOP["busy"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
+def fm_paste(op, srcs, dst, overwrite=False):
+    bf = fm_bf()
+    dst = fm_clean(dst)
+    srcs = [fm_clean(x) for x in srcs]
+    for s in srcs:
+        if dst == s or dst.startswith(s + "/"):
+            raise E.PipeError("No se puede %s una carpeta dentro de si misma" % ("mover" if op == "move" else "copiar"))
+
+    def work():
+        for i, s in enumerate(srcs):
+            if FM_CANCEL.is_set():
+                raise E.Cancelled()
+            with LOCK:
+                FMOP.update(current=s, items_done=i, bytes_done=0, bytes_total=0)
+            if op == "move" and posixpath.dirname(s) == dst:
+                continue
+            bf._req("POST", "/api/fs/" + op, form={"src": s, "dst": dst, "overwrite": "1" if overwrite else "0"})
+            while True:
+                time.sleep(0.7)
+                if FM_CANCEL.is_set():
+                    try:
+                        bf._req("GET", "/api/fs/job/cancel")
+                    except Exception:
+                        pass
+                j = bf._req("GET", "/api/fs/job/status")
+                with LOCK:
+                    FMOP.update(bytes_done=int(j.get("copiedBytes") or 0), bytes_total=int(j.get("totalBytes") or 0),
+                                current=j.get("current") or s)
+                if not j.get("busy"):
+                    if j.get("error"):
+                        raise E.PipeError(j["error"])
+                    break
+            if FM_CANCEL.is_set():
+                raise E.Cancelled()
+        with LOCK:
+            FMOP["items_done"] = len(srcs)
+    _fm_start(op, len(srcs), work)
+
+
+def fm_delete(paths):
+    bf = fm_bf()
+    paths = [fm_clean(x) for x in paths]
+    for p in paths:
+        if p.count("/") < 2:
+            raise E.PipeError("Por seguridad no borro carpetas de primer nivel (%s)" % p)
+
+    def work():
+        for i, p in enumerate(paths):
+            if FM_CANCEL.is_set():
+                raise E.Cancelled()
+            with LOCK:
+                FMOP.update(current=p, items_done=i)
+            bf.delete(p, FM_CANCEL)
+        with LOCK:
+            FMOP["items_done"] = len(paths)
+    _fm_start("delete", len(paths), work)
+
+
+def fm_download(paths):
+    cfg = cfg_snapshot()
+    paths = [fm_clean(x) for x in paths]
+    root_local = os.path.join(os.path.expanduser("~"), "Downloads", "PS5 Directo")
+
+    def walk(rpath):
+        """[(ruta remota, ruta relativa, tamano)] de un archivo o carpeta."""
+        out = []
+        base = posixpath.basename(rpath)
+        listing = None
+        try:
+            listing = fm_list(rpath)["entries"]
+        except Exception:
+            listing = None
+        if listing is None:
+            return [(rpath, base, None)]
+        stack = [(rpath, base, listing)]
+        while stack:
+            cur, rel, ents = stack.pop()
+            for e in ents:
+                rp, rr = cur + "/" + e["name"], rel + "/" + e["name"]
+                if e["dir"]:
+                    stack.append((rp, rr, fm_list(rp)["entries"]))
+                else:
+                    out.append((rp, rr, e.get("size")))
+        return out
+
+    def work():
+        files = []
+        for p in paths:
+            parent = fm_list(posixpath.dirname(p) or "/")["entries"]
+            ent = next((e for e in parent if e["name"] == posixpath.basename(p)), None)
+            if ent and not ent["dir"]:
+                files.append((p, posixpath.basename(p), ent.get("size")))
+            else:
+                files.extend(walk(p))
+        total = sum(sz or 0 for _, _, sz in files)
+        with LOCK:
+            FMOP.update(items_total=len(files), bytes_total=total, local=root_local)
+        done = 0
+        for i, (rp, rel, sz) in enumerate(files):
+            if FM_CANCEL.is_set():
+                raise E.Cancelled()
+            with LOCK:
+                FMOP.update(current=rp, items_done=i)
+            local = os.path.join(root_local, *rel.split("/"))
+            if sz is not None and os.path.isfile(local) and os.path.getsize(local) == sz:
+                done += sz
+                continue
+            base = done
+            E.ftp_download(cfg, rp, local, FM_CANCEL, lambda n: FMOP.update(bytes_done=base + n), sz)
+            done = base + (sz or 0)
+        with LOCK:
+            FMOP.update(items_done=len(files), bytes_done=done,
+                        message="Guardado en %s" % root_local)
+    _fm_start("download", len(paths), work)
+
+
+def fm_chmod(paths):
+    bf = fm_bf()
+    paths = [fm_clean(x) for x in paths]
+
+    def work():
+        changed = 0
+        for i, p in enumerate(paths):
+            with LOCK:
+                FMOP.update(current=p, items_done=i)
+            c, _, _ = bf.fix_perms(p, FM_CANCEL)
+            changed += c
+        with LOCK:
+            FMOP.update(items_done=len(paths), message="Permisos 777 puestos en %d elementos" % changed)
+    _fm_start("chmod", len(paths), work)
+
+
+PICK_SCRIPT = r'''
+import json, sys, os
+import tkinter as tk
+from tkinter import filedialog
+r = tk.Tk(); r.withdraw()
+try:
+    r.attributes("-topmost", True)
+except Exception:
+    pass
+kind, title = sys.argv[1], sys.argv[2]
+if kind == "folder":
+    p = filedialog.askdirectory(title=title, mustexist=True)
+    res = [p] if p else []
+else:
+    res = list(filedialog.askopenfilenames(title=title))
+print(json.dumps([os.path.normpath(x) for x in res]))
+'''
+
+
+def fm_api(p, b):
+    if p == "/api/fm/list":
+        return fm_list(b.get("path") or "/data")
+    if p == "/api/fm/du":
+        return {"size": fm_bf().du(fm_clean(b.get("path")))}
+    if p == "/api/fm/mkdir":
+        path = fm_clean(b.get("path"))
+        bf = E.BFpilot(cfg_snapshot())
+        if bf.alive():
+            bf.mkdir(path)
+        else:
+            E.Ftp(cfg_snapshot()).call(lambda f: f.mkd(path))
+        return {}
+    if p == "/api/fm/rename":
+        src, dst = fm_clean(b.get("src")), fm_clean(b.get("dst"))
+        bf = E.BFpilot(cfg_snapshot())
+        if bf.alive():
+            if bf.exists(dst):
+                raise E.PipeError("Ya existe %s" % dst)
+            bf.rename(src, dst)
+        else:
+            E.Ftp(cfg_snapshot()).call(lambda f: f.rename(src, dst))
+        return {}
+    if p == "/api/fm/paste":
+        op = b.get("op")
+        if op not in ("copy", "move"):
+            raise E.PipeError("operacion no valida")
+        fm_paste(op, b.get("srcs") or [], b.get("dst"), bool(b.get("overwrite")))
+        return {}
+    if p == "/api/fm/delete":
+        fm_delete(b.get("paths") or [])
+        return {}
+    if p == "/api/fm/download":
+        fm_download(b.get("paths") or [])
+        return {}
+    if p == "/api/fm/chmod":
+        fm_chmod(b.get("paths") or [])
+        return {}
+    if p == "/api/fm/op":
+        with LOCK:
+            return {"op": dict(FMOP)}
+    if p == "/api/fm/cancel":
+        FM_CANCEL.set()
+        return {}
+    if p == "/api/fm/open_local":
+        path = FMOP.get("local") or os.path.join(os.path.expanduser("~"), "Downloads", "PS5 Directo")
+        if os.name == "nt" and os.path.isdir(path):
+            os.startfile(path)
+        return {"path": path}
+    if p == "/api/pick":
+        return {"paths": pick_paths(b.get("kind") or "files", b.get("title") or "")}
+    if p == "/api/history":
+        return {"items": read_history()}
+    if p == "/api/history/clear":
+        _save_json(HISTORY_FILE, [])
+        return {}
+    raise E.PipeError("no existe")
+
+
+def pick_paths(kind, title):
+    """Abre el dialogo de Windows para elegir archivos o una carpeta del PC."""
+    import subprocess
+    exe = sys.executable
+    if os.name == "nt" and exe.lower().endswith("pythonw.exe"):
+        alt = exe[:-len("pythonw.exe")] + "python.exe"
+        exe = alt if os.path.isfile(alt) else exe
+    kw = {"creationflags": 0x08000000} if os.name == "nt" else {}
+    p = subprocess.run([exe, "-c", PICK_SCRIPT, kind, title or ""], stdout=subprocess.PIPE,
+                       stderr=subprocess.PIPE, timeout=3600, **kw)
+    if p.returncode != 0:
+        raise E.PipeError("No pude abrir el selector de archivos: %s"
+                          % (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["?"])[-1])
+    return json.loads(p.stdout.decode("utf-8", "replace").strip() or "[]")
+
+
+# ---------------------------------------------------------------------------
+# Carpetas del PC: se mandan tal cual, saltando lo que ya este en la consola
+# ---------------------------------------------------------------------------
+
+def folder_job(job, src, cancel):
+    cfg = cfg_snapshot()
+    cfg["_limit_bps"] = live_limit_bps
+    dest = (job.get("dest") or cfg["dest"]).rstrip("/")
+    tid = None
+    pj = os.path.join(src.path, "sce_sys", "param.json")
+    if os.path.isfile(pj):
+        try:
+            with open(pj, encoding="utf-8", errors="replace") as fh:
+                tid = E.title_id(fh.read())
+        except Exception:
+            pass
+        tid = tid or E.title_id(src.name)
+    name = (tid + "-app") if tid else src.name
+    target = dest + "/" + name
+    total = src.size
+    jlog(job, "Carpeta con %d archivos (%s) -> %s" % (len(src.files), human(total), target))
+    bf = E.BFpilot(cfg)
+    free = free_space(bf)
+    if free is not None:
+        jlog(job, "Espacio libre en la PS5: %s" % human(free))
+        if free < margin_bytes():
+            raise E.PipeError("No hay sitio en la PS5: quedan %s libres y el margen es %s. Libera espacio "
+                              "y pulsa Reintentar." % (human(free), human(margin_bytes())))
+    if tid:
+        warn_duplicates(job, bf, tid, exclude=target)
+    up = Meter()
+    last = {"v": 0, "t": 0.0}
+    stop_speed = threading.Event()
+
+    def speed_loop():
+        while not stop_speed.wait(1):
+            setj(job, speed=up.rate(), dl_speed=0.0)
+    threading.Thread(target=speed_loop, daemon=True).start()
+
+    def progress(v, rel):
+        if v > last["v"]:
+            up(v - last["v"])
+            last["v"] = v
+        now = time.time()
+        if now - last["t"] > 0.5:
+            last["t"] = now
+            setj(job, sent=v, phase="Enviando carpeta: %s" % rel[-80:])
+
+    setj(job, status="enviando", total=total, sent=0, phase="Comparando con lo que ya hay en la PS5")
+    watch = start_space_watch(job, bf, cancel, "el envio")
+    try:
+        sent, skipped, resumed = E.upload_tree(cfg, src, target, cancel, lambda m: jlog(job, m), progress)
+    finally:
+        stop_speed.set()
+        watch.set()
+        setj(job, speed=0.0)
+    setj(job, sent=total)
+    jlog(job, "Carpeta enviada: %d archivos nuevos, %d ya estaban iguales, %d continuados"
+         % (sent, skipped, resumed))
+    if bf.alive():
+        fix_game_perms(job, bf, target, cancel)
+    return {"mode": "done", "placed": [target], "game": bool(tid)}
 
 
 # ---------------------------------------------------------------------------
@@ -1056,6 +1523,11 @@ def _extract_job(job, info, cancel):
     cfg = cfg_snapshot()
     bf = E.BFpilot(cfg)
     dest = job["dest"] or cfg["dest"]
+    if info["mode"] == "done":
+        for p in info.get("placed") or []:
+            jlog(job, "Colocado: %s" % p)
+        job["_placed_game"] = bool(info.get("game"))
+        return info.get("placed") or []
     if info["mode"] == "pcx":
         return finish_pc_extract(job, info, bf, dest, cancel, cfg)
     wait_bfpilot(job, bf, cancel)
@@ -1271,7 +1743,7 @@ def transfer_worker():
                     idx = JOBS.index(job)
                     for k, extra in enumerate(sets[1:], 1):
                         nj = new_job([s.original for s in extra], job["password"], job["dest"],
-                                     where=job.get("where"))
+                                     where=job.get("where"), raw=job.get("raw"))
                         nj["sources"] = describe(extra)
                         nj["title"] = E.display_name(extra[0].name)
                         JOBS.insert(idx + k, nj)
@@ -1296,6 +1768,7 @@ def transfer_worker():
                     msg += " -- La PS5 solo tiene %s libres: seguramente se lleno el disco." % human(free)
             setj(job, status="error", error=msg, phase="Error")
             jlog(job, "ERROR: %s" % msg)
+            record_history(job)
             traceback.print_exc()
         save_jobs()
 
@@ -1318,6 +1791,7 @@ def extract_worker():
                  phase=("Listo. ShadowMountPlus lo anadira al inicio en unos segundos" if is_game
                         else "Listo. Copiado en la PS5"))
             jlog(job, "Terminado")
+            record_history(job)
         except E.Cancelled:
             stopped(job)
         except Exception as e:
@@ -1328,6 +1802,7 @@ def extract_worker():
                     msg += " -- La PS5 solo tiene %s libres: seguramente se lleno el disco." % human(free)
             setj(job, status="error", error=msg, phase="Error")
             jlog(job, "ERROR: %s" % msg)
+            record_history(job)
             traceback.print_exc()
         save_jobs()
 
@@ -1874,6 +2349,14 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 bases = ["/data/homebrew"]
             return self._send(200, {"ok": True, "dests": [b for b in bases if b.endswith("homebrew")]})
+        if p.startswith("/api/fm/") or p in ("/api/pick", "/api/history", "/api/history/clear"):
+            try:
+                return self._send(200, dict(ok=True, **fm_api(p, b)))
+            except E.PipeError as e:
+                return self._send(200, {"ok": False, "error": str(e)})
+            except Exception as e:
+                traceback.print_exc()
+                return self._send(200, {"ok": False, "error": str(e)})
         if p == "/api/fixperms":
             try:
                 return self._send(200, {"ok": True, "results": fix_all_perms()})
@@ -1913,7 +2396,8 @@ class Handler(BaseHTTPRequestHandler):
             dest = (b.get("dest") or SETTINGS["dest"]).rstrip("/") or "/data/homebrew"
             if not dest.startswith("/data") and not dest.startswith("/mnt/"):
                 return self._send(400, {"ok": False, "error": "El destino debe estar en /data o /mnt"})
-            job = new_job(lines, (b.get("password") or "").strip(), dest, where=b.get("where"))
+            job = new_job(lines, (b.get("password") or "").strip(), dest, where=b.get("where"),
+                          raw=bool(b.get("raw")))
             with WAKE:
                 JOBS.append(job)
                 WAKE.notify_all()
@@ -2067,10 +2551,8 @@ def dropped_paths():
         if a.startswith("--"):
             continue
         a = a.strip().strip('"')
-        if os.path.isfile(a):
+        if os.path.isfile(a) or os.path.isdir(a):
             out.append(os.path.abspath(a))
-        elif os.path.isdir(a):
-            print("Es una carpeta, la salto (arrastra archivos): %s" % a)
     return out
 
 

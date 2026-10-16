@@ -495,11 +495,182 @@ class FileSource:
                 yield data
 
 
+class FolderSource:
+    """Una carpeta del PC: se manda entera, archivo a archivo, conservando la estructura."""
+    kind = "folder"
+
+    def __init__(self, path):
+        self.path = os.path.abspath(path.strip().strip('"'))
+        self.original = self.path
+        self.name = safe_name(os.path.basename(self.path.rstrip("\\/")) or "carpeta")
+        self.size = -1
+        self.ranges = True
+        self.files = []      # [(ruta relativa con /, tamano)]
+        self.dirs = []
+
+    def probe(self):
+        if not os.path.isdir(self.path):
+            raise PipeError("No existe la carpeta: %s" % self.path)
+        files, dirs = [], []
+        for root, ds, fs in os.walk(self.path):
+            ds.sort()
+            rel_root = os.path.relpath(root, self.path).replace("\\", "/")
+            rel_root = "" if rel_root == "." else rel_root
+            for d in ds:
+                dirs.append((rel_root + "/" + d).lstrip("/"))
+            for f in sorted(fs):
+                full = os.path.join(root, f)
+                try:
+                    files.append(((rel_root + "/" + f).lstrip("/"), os.path.getsize(full)))
+                except OSError:
+                    pass
+        self.files, self.dirs = files, dirs
+        self.size = sum(sz for _, sz in files)
+        return self
+
+
 def make_source(text):
     text = text.strip().strip('"')
     if re.match(r"^https?://", text, re.I):
         return UrlSource(text)
+    if os.path.isdir(text):
+        return FolderSource(text)
     return FileSource(text)
+
+
+def ftp_sizes(f, path):
+    """{nombre: tamano} de los archivos de una carpeta remota (None si no existe)."""
+    try:
+        return _ftp_sizes(f, path)
+    finally:
+        try:
+            f.voidcmd("TYPE I")     # MLSD/LIST dejan la conexion en ASCII y REST fallaria
+        except Exception:
+            pass
+
+
+def _ftp_sizes(f, path):
+    out = {}
+    try:
+        for name, facts in f.mlsd(path, facts=["type", "size"]):
+            if facts.get("type") == "file":
+                out[name] = int(facts.get("size") or 0)
+        return out
+    except ftplib.error_perm as e:
+        if str(e).startswith("550"):
+            return None
+    except Exception:
+        pass
+    # servidor sin MLSD: LIST y leer el tamano de cada linea
+    lines = []
+    try:
+        f.retrlines("LIST " + path, lines.append)
+    except ftplib.error_perm:
+        return None
+    for ln in lines:
+        parts = ln.split(None, 8)
+        if len(parts) == 9 and not ln.startswith("d"):
+            try:
+                out[parts[8]] = int(parts[4])
+            except ValueError:
+                pass
+    return out
+
+
+def upload_tree(cfg, src, remote_root, cancel, log, progress):
+    """Manda una FolderSource a remote_root. Salta los archivos que ya estan con el mismo
+    tamano, continua los que se cortaron (mas pequenos) y vuelve a mandar los demas.
+    progress(bytes_hechos, ruta_actual). Devuelve (enviados, saltados, continuados)."""
+    by_dir = {}
+    for rel, size in src.files:
+        d, _, n = rel.rpartition("/")
+        by_dir.setdefault(d, []).append((n, size, rel))
+    done = 0
+    sent = skipped = resumed = 0
+    w = _FtpWriter(cfg, cancel, log)
+    try:
+        w.mkdir(remote_root)
+        for d in src.dirs:
+            w.mkdir(remote_root + "/" + d)
+        for d in sorted(by_dir):
+            rdir = remote_root + ("/" + d if d else "")
+            w.mkdir(rdir)
+            have = w._retry(lambda: ftp_sizes(w.f, rdir)) or {}
+            for name, size, rel in by_dir[d]:
+                if cancel.is_set():
+                    raise Cancelled()
+                rpath = rdir + "/" + name
+                got = have.get(name)
+                if got == size:
+                    skipped += 1
+                    done += size
+                    progress(done, rel)
+                    continue
+                offset = got if (got is not None and 0 < got < size) else 0
+                if offset:
+                    resumed += 1
+                    log("Continuando %s desde %s MB" % (rel, offset // MiB))
+                local = os.path.join(src.path, *rel.split("/"))
+                base = done
+                w.begin(rpath, offset)
+                with open(local, "rb") as fh:
+                    fh.seek(offset)
+                    pos = offset
+                    while True:
+                        if cancel.is_set():
+                            raise Cancelled()
+                        chunk = fh.read(4 * MiB)
+                        if not chunk:
+                            break
+                        w.write(chunk)
+                        pos += len(chunk)
+                        progress(base + pos, rel)
+                w.end(size)
+                done = base + size
+                sent += 1
+        return sent, skipped, resumed
+    finally:
+        w.close()
+
+
+def ftp_download(cfg, remote, local, cancel, progress, size=None):
+    """Baja un archivo de la PS5 al PC (continua si ya hay un .part)."""
+    os.makedirs(os.path.dirname(local) or ".", exist_ok=True)
+    part = local + ".part"
+    retries = int(cfg.get("retries", 8))
+    for attempt in range(retries + 1):
+        if cancel.is_set():
+            raise Cancelled()
+        off = os.path.getsize(part) if os.path.isfile(part) else 0
+        f = None
+        try:
+            f = Ftp(cfg).connect()
+            with open(part, "ab") as fh:
+                state = {"n": off}
+
+                def cb(data):
+                    if cancel.is_set():
+                        raise Cancelled()
+                    fh.write(data)
+                    state["n"] += len(data)
+                    progress(state["n"])
+                f.retrbinary("RETR " + remote, cb, blocksize=MiB, rest=off or None)
+            if size is not None and os.path.getsize(part) != size:
+                raise PipeError("descarga incompleta")
+            os.replace(part, local)
+            return
+        except Cancelled:
+            raise
+        except Exception as e:
+            if attempt >= retries:
+                raise PipeError("No pude bajar %s: %s" % (remote, e))
+            time.sleep(min(30, 2 * (attempt + 1)))
+        finally:
+            if f is not None:
+                try:
+                    f.close()
+                except Exception:
+                    pass
 
 
 def concat_stream(parts, offset, cfg, cancel, meter):
@@ -1052,13 +1223,13 @@ class _FtpWriter:
             pass
         return c
 
-    def begin(self, path):
+    def begin(self, path, offset=0):
         self.path = path
-        self.sent = 0
+        self.sent = offset
         self.tail = deque()
         self.tail_len = 0
         self.mkdir(path.rsplit("/", 1)[0] or "/")
-        self.conn = self._retry(lambda: self._open_data(path, 0))
+        self.conn = self._retry(lambda: self._open_data(path, offset))
 
     def _remember(self, data):
         self.tail.append(data)

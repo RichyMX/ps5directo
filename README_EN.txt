@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.15 — USER GUIDE (English)
+PS5 DIRECTO 1.16 — USER GUIDE (English)
 =======================================
 
 Paste links (or drag files from your PC) and the tool does the rest:
@@ -14,6 +14,25 @@ Paste links (or drag files from your PC) and the tool does the rest:
 
 While one transfer is extracting on the PS5, the next one in the queue is
 already being sent.
+
+TABS
+  - Transfers: the queue.
+  - Console files: browse the PS5 like a file explorer. You see the size
+    and date of every file (folders with "calculate"), and you can create
+    folders, rename, copy or move (Copy/Move, then "Paste here" in the
+    destination folder), delete, download to the PC (to Downloads\PS5
+    Directo), set 777 permissions, and upload files or folders as-is into
+    the current folder.
+    Copy, move, delete and folder sizes need BFpilot; without it the
+    browser is read-only over FTP.
+  - Activity: history of finished and failed transfers.
+
+PC FOLDERS
+  With "Choose folder…" (or by dragging the folder onto the icon) a whole
+  folder is sent as-is. If it has sce_sys it goes to /data/homebrew as
+  TITLEID-app. If part of it is already on the console (for example, an
+  upload from another program that got cut off), it skips the files that
+  are already identical and resumes the ones left half-way.
 
 ALTERNATIVE: EXTRACT ON THE PC (7-Zip)
   In "Where to extract" choose "On the PC (7-Zip)" (or make it the default
@@ -195,6 +214,9 @@ Settings and queue are stored in  %USERPROFILE%\.ps5directo
 
 WHAT'S NEW
 ----------
+1.16  "Console files" tab (file browser: sizes, copy, move, rename, delete,
+      download to PC, permissions, upload here). Send PC folders with
+      resume. "Choose files…/Choose folder…" buttons. "Activity" tab.
 1.15  English interface (auto-detected; English/Español button). The
       browser extension also follows the browser's language.
 1.14  Welcome guide on first launch ("Guide" button to see it again).

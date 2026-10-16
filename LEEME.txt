@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.15
+PS5 DIRECTO 1.16
 ================
 (English: see README_EN.txt)
 
@@ -15,6 +15,25 @@ Pega los enlaces (o arrastra archivos de tu PC) y la herramienta hace todo sola:
 
 Mientras una transferencia se descomprime en la PS5, la siguiente de la cola ya se
 va enviando.
+
+PESTAÑAS
+  - Transferencias: la cola de siempre.
+  - Archivos de la consola: navega por la PS5 como en un explorador. Ves el
+    tamaño y la fecha de cada archivo (el de las carpetas, con "calcular"),
+    y puedes crear carpetas, renombrar, copiar o mover (Copiar/Mover y
+    luego "Pegar aquí" en la carpeta de destino), borrar, bajar al PC
+    (a Descargas\PS5 Directo), poner permisos 777 y subir archivos o
+    carpetas tal cual a la carpeta en la que estás.
+    Copiar, mover, borrar y calcular tamaños necesitan BFpilot; sin él, el
+    explorador funciona en solo lectura por FTP.
+  - Actividad: historial de lo que se ha terminado o ha fallado.
+
+CARPETAS DEL PC
+  Con "Elegir carpeta…" (o arrastrando la carpeta al icono) se manda una
+  carpeta entera tal cual. Si tiene sce_sys, va a /data/homebrew como
+  TITLEID-app. Si en la consola ya hay parte (por ejemplo, un envío de otro
+  programa que se cortó), salta los archivos que ya están iguales y
+  continúa los que se quedaron a medias.
 
 ALTERNATIVA: DESCOMPRIMIR EN EL PC (7-Zip)
   En "Dónde descomprimir" elige "En el PC (7-Zip)" (o ponlo por defecto en
@@ -142,6 +161,13 @@ descarga sola, envio PC -> PS5 solo y las dos cosas a la vez, y te dice
 de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
+
+NOVEDADES 1.16
+- Pestaña "Archivos de la consola": explorador con tamaños, copiar, mover,
+  renombrar, borrar, bajar al PC, permisos y subir aquí.
+- Enviar carpetas del PC, saltando lo que ya está y continuando lo cortado.
+- Botones "Elegir archivos…" y "Elegir carpeta…" (ventana de Windows).
+- Pestaña "Actividad" con el historial.
 
 NOVEDADES 1.15
 - Inglés: botón "English" / "Español" arriba. La primera vez elige solo
