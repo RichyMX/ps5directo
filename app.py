@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.18.0"
+VERSION = "1.18.1"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
 DEFAULT_REPO = "jstrdev/ps5directo"
@@ -998,6 +998,9 @@ def fm_api(p, b):
     if p == "/api/space/cancel":
         SPACE_CANCEL.set()
         return {}
+    if p == "/api/fm/stat":
+        st = E.BFpilot(cfg_snapshot())._req("GET", "/api/fs/stat", {"path": fm_clean(b.get("path") or "/data")}, timeout=8)
+        return {"free": st.get("availableBytes"), "total": st.get("usableTotalBytes") or st.get("totalBytes")}
     if p == "/api/fm/list":
         return fm_list(b.get("path") or "/data")
     if p == "/api/fm/du":

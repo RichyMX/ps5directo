@@ -220,6 +220,8 @@ Settings and queue are stored in  %USERPROFILE%\.ps5directo
 
 WHAT'S NEW
 ----------
+1.18.1 - When deleting something big you see how much has been freed and how
+        long it has taken, and the browser's free space updates meanwhile.
 1.18  - "Space" tab: a pie chart and list of everything that takes up space
         on the console, by game name and size. It flags repeated games (for
         example a folder and its converted version), half-sent transfers and

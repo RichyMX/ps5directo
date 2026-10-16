@@ -168,6 +168,10 @@ de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
 
+NOVEDADES 1.18.1
+- Al borrar algo grande se ve cuánto se ha liberado y el tiempo que lleva, y el
+  espacio libre del explorador se actualiza mientras tanto.
+
 NOVEDADES 1.18
 - Pestaña "Espacio": gráfico de quesitos y lista de todo lo que ocupa sitio en
   la consola, con el nombre de cada juego y su tamaño. Marca juegos repetidos
