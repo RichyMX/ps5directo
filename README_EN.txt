@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.17 — USER GUIDE (English)
+PS5 DIRECTO 1.18 — USER GUIDE (English)
 =======================================
 
 Paste links (or drag files from your PC) and the tool does the rest:
@@ -25,6 +25,11 @@ TABS
     the current folder.
     Copy, move, delete and folder sizes need BFpilot; without it the
     browser is read-only over FTP.
+  - Space: a pie chart of what takes up space on the console, with each
+    game's name and size. It flags repeated games (for example a folder and
+    its version converted to an image), half-sent transfers and leftovers,
+    and lets you delete them from there (it asks first). Needs BFpilot.
+    Games installed from the PS5 itself are shown but deleted on the console.
   - Activity: history of finished and failed transfers.
 
 PC FOLDERS
@@ -215,6 +220,23 @@ Settings and queue are stored in  %USERPROFILE%\.ps5directo
 
 WHAT'S NEW
 ----------
+1.18  - "Space" tab: a pie chart and list of everything that takes up space
+        on the console, by game name and size. It flags repeated games (for
+        example a folder and its converted version), half-sent transfers and
+        leftovers, and deletes them from there. USB/external drives too.
+      - Faster downloads: each connection is reused for many chunks in a row,
+        like download managers do.
+      - The extension passes that host's cookies, browser and source page to
+        PS5 Directo: same speed and access as in the browser (logged-in or
+        premium) and fewer 403 errors. Cookies never leave your PC and are
+        never saved to disk. After updating, reload the extension in
+        chrome://extensions and accept the new permission.
+      - Folders: checks that what's left to send fits on the PS5, and the
+        speed no longer shows false jumps when resuming a half-sent file.
+      - The PS5 IP is cleaned up if typed with spaces, ftp://, a port or
+        commas (it used to fail with "getaddrinfo failed").
+      - After updating, a window shows what's new.
+      - Better layout on narrow windows and small fixes.
 1.17  ftp:// links (a NAS or other server) with resume. .tar/.tar.gz/.tar.bz2/
       .tar.xz extracted on the PC (no 7-Zip needed). Folders upload over several
       connections at once. Own steps for folder uploads.

@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.17
+PS5 DIRECTO 1.18
 ================
 (English: see README_EN.txt)
 
@@ -26,6 +26,12 @@ PESTAÑAS
     carpetas tal cual a la carpeta en la que estás.
     Copiar, mover, borrar y calcular tamaños necesitan BFpilot; sin él, el
     explorador funciona en solo lectura por FTP.
+  - Espacio: gráfico de quesitos con lo que ocupa sitio en la consola, con
+    el nombre de cada juego y su tamaño. Avisa de juegos repetidos (por
+    ejemplo la carpeta y su versión convertida a imagen), envíos a medias y
+    restos, y permite borrarlos desde ahí (pide confirmación). Necesita
+    BFpilot. Los juegos instalados desde la propia PS5 se ven pero se borran
+    desde la consola.
   - Actividad: historial de lo que se ha terminado o ha fallado.
 
 CARPETAS DEL PC
@@ -161,6 +167,25 @@ descarga sola, envio PC -> PS5 solo y las dos cosas a la vez, y te dice
 de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
+
+NOVEDADES 1.18
+- Pestaña "Espacio": gráfico de quesitos y lista de todo lo que ocupa sitio en
+  la consola, con el nombre de cada juego y su tamaño. Marca juegos repetidos
+  (por ejemplo la carpeta y su versión convertida), envíos a medias y restos,
+  y se pueden borrar desde ahí. También con discos USB/externos.
+- Descargas más rápidas: cada conexión se reutiliza para muchos trozos
+  seguidos, como hacen los gestores de descargas.
+- La extensión pasa a PS5 Directo las cookies de ese alojamiento, el navegador
+  y la página de origen: misma velocidad y permiso que en el navegador (sesión
+  iniciada, cuenta premium) y menos errores 403. Las cookies no salen de tu PC
+  ni se guardan en disco. Tras actualizar, en chrome://extensions recarga la
+  extensión y acepta el permiso nuevo.
+- Carpetas: antes de enviar comprueba que lo que falta cabe en la PS5, y la
+  velocidad ya no da saltos falsos al continuar un archivo a medias.
+- La IP de la PS5 se limpia sola si se escribe con espacios, ftp://, puerto o
+  comas (antes daba "getaddrinfo failed").
+- Tras actualizar, una ventana te enseña las novedades.
+- Mejor diseño en ventanas estrechas y pequeños arreglos.
 
 NOVEDADES 1.17
 - Enlaces ftp:// (un NAS u otro servidor): ftp://usuario:clave@nas/ruta/archivo.rar

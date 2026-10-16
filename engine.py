@@ -10,6 +10,7 @@ Solo usa la biblioteca estandar de Python 3.9+.
 """
 
 import ftplib
+import http.client
 import json
 import math
 import os
@@ -158,18 +159,123 @@ HONEST_UA = "PS5Directo/1.0 (download manager)"
 _HOST_MODE = {}
 
 
-def _open(url, headers=None, timeout=30):
+# Lo que la extension del navegador nos cuenta de cada alojamiento: sus cookies (sesion,
+# cuenta premium), el navegador y la pagina de origen. Asi el servidor nos trata igual que
+# al navegador, como hacen los gestores de descargas. Solo en memoria, nunca en disco.
+_BROWSER = {}
+_BROWSER_LOCK = threading.Lock()
+
+
+def set_browser_headers(url, cookie="", ua="", referer=""):
+    host = urllib.parse.urlparse(url).netloc.lower()
+    if not host:
+        return
+    info = {}
+    if cookie:
+        info["Cookie"] = cookie[:8000]
+    if ua:
+        info["User-Agent"] = ua[:500]
+    if referer and re.match(r"^https?://", referer, re.I):
+        info["Referer"] = referer[:2000]
+    with _BROWSER_LOCK:
+        if info:
+            _BROWSER[host] = info
+        else:
+            _BROWSER.pop(host, None)
+
+
+def _headers(url, extra=None):
     pu = urllib.parse.urlparse(url)
-    if _HOST_MODE.get(pu.netloc) == "honest":
+    host = pu.netloc.lower()
+    with _BROWSER_LOCK:
+        browser = dict(_BROWSER.get(host) or {})
+    if _HOST_MODE.get(pu.netloc) == "honest" and not browser:
         h = {"User-Agent": HONEST_UA, "Accept": "*/*"}
     else:
         h = {"User-Agent": UA, "Accept": "*/*", "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"}
         if pu.scheme in ("http", "https") and pu.netloc:
             h["Referer"] = "%s://%s/" % (pu.scheme, pu.netloc)
-    if headers:
-        h.update(headers)
-    req = urllib.request.Request(url, headers=h)
+        h.update(browser)
+    if extra:
+        h.update(extra)
+    return h
+
+
+def _open(url, headers=None, timeout=30):
+    req = urllib.request.Request(url, headers=_headers(url, headers))
     return urllib.request.urlopen(req, timeout=timeout, context=_SSL)
+
+
+class _KeepAlive:
+    """Una conexion HTTP que se reutiliza para muchos trozos seguidos (como los gestores
+    de descargas): sin repetir el saludo TCP/TLS ni el arranque lento de TCP en cada trozo.
+    Si hay proxy o el servidor redirige, se usa la via normal."""
+
+    def __init__(self):
+        self.conn = None
+        self.key = None
+        self.used = False
+        self.off = False
+
+    @staticmethod
+    def usable(url):
+        scheme = urllib.parse.urlparse(url).scheme.lower()
+        if scheme not in ("http", "https"):
+            return False
+        try:
+            return not urllib.request.getproxies().get(scheme)
+        except Exception:
+            return False
+
+    def open(self, url, headers, timeout):
+        if self.off:
+            return None
+        pu = urllib.parse.urlparse(url)
+        key = (pu.scheme.lower(), pu.netloc)
+        if self.conn is None or self.key != key:
+            self.close()
+            if key[0] == "https":
+                self.conn = http.client.HTTPSConnection(pu.netloc, timeout=timeout, context=_SSL)
+            else:
+                self.conn = http.client.HTTPConnection(pu.netloc, timeout=timeout)
+            self.key = key
+        path = pu.path or "/"
+        if pu.query:
+            path += "?" + pu.query
+        h = _headers(url, headers)
+        h["Connection"] = "keep-alive"
+        try:
+            self.conn.request("GET", path, headers=h)
+            r = self.conn.getresponse()
+        except Exception:
+            stale = self.used          # el servidor cerro la conexion mientras esperaba:
+            self.close()               # es normal, se abre otra sin contarlo como fallo
+            if not stale:
+                raise
+            return self.open(url, headers, timeout)
+        self.used = True
+        if r.status >= 300:
+            hdrs = r.headers
+            try:
+                r.read(64 * 1024)
+            except Exception:
+                pass
+            self.close()
+            if r.status < 400:
+                self.off = True       # redirige en cada trozo: que lo lleve urllib
+                return None
+            raise urllib.error.HTTPError(url, r.status, r.reason, hdrs, None)
+        return r
+
+    def close(self):
+        if self.conn is not None:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+        self.conn = None
+        self.key = None
+        self.used = False
 
 
 def resolve_url(url):
@@ -289,15 +395,20 @@ def _single(url, cancel, meter):
             yield data
 
 
-def _fetch_range(url, a, b, cancel, meter, tries=6, on_trouble=None):
+def _fetch_range(url, a, b, cancel, meter, tries=6, on_trouble=None, ka=None):
     want = b - a + 1
     last = None
+    rng = {"Range": "bytes=%d-%d" % (a, b)}
     for attempt in range(tries):
         if cancel.is_set():
             raise Cancelled()
         got = bytearray()
         try:
-            with _open(url, {"Range": "bytes=%d-%d" % (a, b)}, timeout=25) as r:
+            r = ka.open(url, rng, 25) if ka is not None else None
+            reused = r is not None
+            if r is None:
+                r = _open(url, rng, timeout=25)
+            try:
                 if r.status != 206:
                     raise PipeError("el servidor no respeto el rango pedido")
                 while len(got) < want:
@@ -308,8 +419,19 @@ def _fetch_range(url, a, b, cancel, meter, tries=6, on_trouble=None):
                         break
                     got += piece
                     meter(len(piece))
+            except BaseException:
+                if reused:
+                    ka.close()
+                raise
+            finally:
+                if not reused:
+                    r.close()
             if len(got) == want:
+                if reused and r.will_close:
+                    ka.close()        # el servidor no deja reutilizarla
                 return bytes(got)
+            if reused:
+                ka.close()
             last = "respuesta corta (%d de %d bytes)" % (len(got), want)
         except (Cancelled, PipeError):
             raise
@@ -392,7 +514,17 @@ def _ranged(url, start, end, cfg, cancel, meter):
                 state["trouble_t"] = now
                 log("El servidor va con problemas (%s): bajo a %d conexiones" % (kind, state["allowed"]))
 
+    use_ka = _KeepAlive.usable(url)
+
     def worker():
+        ka = _KeepAlive() if use_ka else None
+        try:
+            _worker(ka)
+        finally:
+            if ka is not None:
+                ka.close()
+
+    def _worker(ka):
         while True:
             with cond:
                 # recuperar conexiones si lleva un rato sin problemas
@@ -415,18 +547,18 @@ def _ranged(url, start, end, cfg, cancel, meter):
                 started[i] = time.time()
                 state["active"] += 1
             try:
-                fetch(i)
+                fetch(i, ka=ka)
             finally:
                 with cond:
                     state["active"] -= 1
                     cond.notify_all()
 
-    def fetch(i, hedge=False):
+    def fetch(i, hedge=False, ka=None):
         a = start + i * chunk
         b = min(end, a + chunk) - 1
         t0 = time.time()
         try:
-            data = _fetch_range(url, a, b, cancel, meter, on_trouble=trouble)
+            data = _fetch_range(url, a, b, cancel, meter, on_trouble=trouble, ka=ka)
         except Exception as e:
             with cond:
                 # si es la copia de rescate, o el original ya llego, no es grave
@@ -669,10 +801,12 @@ def _ftp_sizes(f, path):
     return out
 
 
-def upload_tree(cfg, src, remote_root, cancel, log, progress, workers=None):
+def upload_tree(cfg, src, remote_root, cancel, log, progress, workers=None, on_plan=None):
     """Manda una FolderSource a remote_root. Salta los archivos que ya estan con el mismo
     tamano, continua los que se cortaron (mas pequenos) y vuelve a mandar los demas.
     Usa varias conexiones a la vez (cfg parallel_files). progress(bytes_hechos, ruta_actual).
+    on_plan(bytes_que_faltan), si se da, se llama tras comparar y antes de enviar nada
+    (para comprobar el espacio libre); puede lanzar una excepcion para no seguir.
     Devuelve (enviados, saltados, continuados)."""
     import queue
     by_dir = {}
@@ -700,9 +834,12 @@ def upload_tree(cfg, src, remote_root, cancel, log, progress, workers=None):
                     st["done"] += size
                     continue
                 offset = got if (got is not None and 0 < got < size) else 0
+                st["done"] += offset      # lo que ya habia en la consola cuenta como hecho
                 tasks.put((rdir + "/" + name, rel, size, offset))
     finally:
         w.close()
+    if on_plan is not None:
+        on_plan(max(0, src.size - st["done"]))
     progress(st["done"], "")
     if tasks.empty():
         return 0, st["skipped"], 0
@@ -724,8 +861,6 @@ def upload_tree(cfg, src, remote_root, cancel, log, progress, workers=None):
                     log("Continuando %s desde %s MB" % (rel, offset // MiB))
                 local = os.path.join(src.path, *rel.split("/"))
                 ww.begin(rpath, offset)
-                with lock:
-                    st["done"] += offset      # lo que ya habia en la consola cuenta como hecho
                 pos = offset
                 with open(local, "rb") as fh:
                     fh.seek(offset)
@@ -817,9 +952,24 @@ def concat_stream(parts, offset, cfg, cancel, meter):
 # FTP de la PS5
 # ---------------------------------------------------------------------------
 
+def clean_host(text):
+    """Deja solo la IP/nombre de la PS5 aunque se escriba con espacios, ftp://, puerto o
+    comas: ' ftp://192,168,1,50:2121/ ' -> ('192.168.1.50', 2121)."""
+    t = re.sub(r"[\s\u200b\u00a0\ufeff]+", "", str(text or ""))
+    t = re.sub(r"^[a-z][a-z0-9+.-]*://", "", t, flags=re.I)
+    t = t.split("/", 1)[0].split("@")[-1]
+    port = None
+    m = re.match(r"^(.*?):(\d{1,5})$", t)
+    if m and m.group(1).count(":") == 0:
+        t, port = m.group(1), int(m.group(2))
+    if re.fullmatch(r"[\d,.]+", t):
+        t = t.replace(",", ".")
+    return t.strip(".").strip("[]"), port
+
+
 class Ftp:
     def __init__(self, cfg):
-        self.host = cfg["ps5_ip"]
+        self.host = clean_host(cfg["ps5_ip"])[0]
         self.port = int(cfg.get("ftp_port", 2121))
         self.user = cfg.get("ftp_user") or "anonymous"
         self.pw = cfg.get("ftp_pass") or ""
@@ -829,7 +979,11 @@ class Ftp:
             raise PipeError("Falta la IP de la PS5: ponla en Ajustes")
         f = ftplib.FTP()
         f.encoding = "utf-8"
-        f.connect(self.host, self.port, timeout=30)
+        try:
+            f.connect(self.host, self.port, timeout=30)
+        except socket.gaierror:
+            raise PipeError("La IP de la PS5 no es valida (%s): en Ajustes escribe solo los numeros, "
+                            "por ejemplo 192.168.1.50, sin ftp:// ni puerto" % self.host)
         f.login(self.user, self.pw)
         f.set_pasv(True)
         f.voidcmd("TYPE I")
@@ -980,7 +1134,7 @@ def upload(cfg, remote_final, total, make_iter, progress, cancel, log, resume=Tr
 
 class BFpilot:
     def __init__(self, cfg):
-        self.base = "http://%s:%s" % (cfg["ps5_ip"], int(cfg.get("bf_port", 5905)))
+        self.base = "http://%s:%s" % (clean_host(cfg["ps5_ip"])[0], int(cfg.get("bf_port", 5905)))
         self.cfg = cfg
 
     def _req(self, method, path, params=None, form=None, timeout=20):
@@ -1130,10 +1284,10 @@ class BFpilot:
                 raise
         self.wait_job(cancel)
 
-    def du(self, path):
+    def du(self, path, timeout=20):
         """Tamano total de una carpeta (o archivo), o None."""
         try:
-            return int(self._req("GET", "/api/fs/du", {"path": path}).get("size") or 0)
+            return int(self._req("GET", "/api/fs/du", {"path": path}, timeout=timeout).get("size") or 0)
         except Exception:
             return None
 
@@ -1348,7 +1502,7 @@ class _FtpWriter:
         else:
             c = self.f.transfercmd("STOR " + path)
         try:
-            c.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 2 * MiB)
+            c.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * MiB)
         except Exception:
             pass
         return c

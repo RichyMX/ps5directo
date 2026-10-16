@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 import traceback
+import urllib.parse
 import urllib.request
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -21,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
 DEFAULT_REPO = "jstrdev/ps5directo"
@@ -53,6 +54,7 @@ DEFAULTS = {
     "guess_passwords": True,
     "delete_archives": True,
     "tour_done": False,       # la guia de bienvenida ya se vio
+    "seen_version": "",       # ultima version cuyas novedades ya se ensenaron
 }
 
 LOCK = threading.RLock()
@@ -824,7 +826,155 @@ print(json.dumps([os.path.normpath(x) for x in res]))
 '''
 
 
+# ---------------------------------------------------------------------------
+# Pestana Espacio: que ocupa sitio en la consola (grafico de quesitos + lista)
+# ---------------------------------------------------------------------------
+
+SPACE = {"busy": False, "root": "", "done": 0, "total": 0, "current": "", "result": None, "error": ""}
+SPACE_CANCEL = threading.Event()
+IMAGE_RE = re.compile(r"\.(exfat|ffpkg|ffpfsc?|ufs|img)$", re.I)
+EXPAND = ("homebrew", "pkg")     # carpetas cuyo contenido se ensena elemento a elemento
+
+
+def title_name(text):
+    """Nombre del juego/app en un param.json (o None)."""
+    try:
+        j = json.loads(text)
+    except Exception:
+        m = re.search(r'"titleName"\s*:\s*"([^"]+)"', text or "")
+        return m.group(1) if m else None
+    lp = j.get("localizedParameters") or {}
+    for lang in (lp.get("defaultLanguage"), "es-ES", "en-US", "en-GB"):
+        if lang and isinstance(lp.get(lang), dict) and lp[lang].get("titleName"):
+            return lp[lang]["titleName"]
+    for v in lp.values():
+        if isinstance(v, dict) and v.get("titleName"):
+            return v["titleName"]
+    return j.get("titleName")
+
+
+def space_scan(root):
+    cfg = cfg_snapshot()
+    bf = E.BFpilot(cfg)
+    if not bf.alive():
+        raise E.PipeError("Para analizar el espacio hace falta BFpilot cargado en la PS5")
+    root = fm_clean(root or "/data")
+    st = bf._req("GET", "/api/fs/stat", {"path": root})
+    total = int(st.get("usableTotalBytes") or st.get("totalBytes") or 0)
+    free = int(st.get("availableBytes") or 0)
+    work = []                                   # (ruta, nombre, es_carpeta, tamano_listado, grupo)
+    for e in bf.listdir(root):
+        path = "%s/%s" % (root.rstrip("/"), e["name"])
+        if e.get("dir") and e["name"].lower() in EXPAND:
+            for c in bf.listdir(path):
+                work.append(("%s/%s" % (path, c["name"]), c["name"], bool(c.get("dir")), c.get("size") or 0,
+                             e["name"].lower()))
+        else:
+            work.append((path, e["name"], bool(e.get("dir")), e.get("size") or 0, ""))
+    extra = []
+    if root == "/data":
+        extra.append(("/user/app", "Juegos instalados desde la PS5", True, 0, "system"))
+    with LOCK:
+        SPACE.update(total=len(work) + len(extra), done=0)
+    items = []
+    for i, (path, name, is_dir, lsize, group) in enumerate(work + extra):
+        if SPACE_CANCEL.is_set():
+            raise E.Cancelled()
+        with LOCK:
+            SPACE.update(done=i, current=path)
+        size = bf.du(path, timeout=300) if is_dir else int(lsize or 0)
+        if size is None:
+            size = int(lsize or 0)
+        it = {"path": path, "name": name, "size": size, "dir": is_dir, "group": group,
+              "kind": "folder" if is_dir else "file", "title": None, "tid": None,
+              "deletable": True, "notes": []}
+        if group == "system":
+            it.update(kind="system", deletable=False)
+            it["notes"].append("Bórralos desde la consola: Ajustes > Almacenamiento")
+        elif group == "homebrew":
+            if is_dir and bf.exists(path + "/sce_sys/param.json"):
+                txt = bf.read_text(path + "/sce_sys/param.json")
+                it.update(kind="app", title=title_name(txt), tid=E.title_id(txt) or E.title_id(name))
+            elif IMAGE_RE.search(name):
+                it.update(kind="image", tid=E.title_id(name))
+            elif is_dir:
+                it["kind"] = "incomplete"
+                it["notes"].append("No tiene sce_sys: no es una app completa (¿envío cortado o copia a medias?)")
+        elif group == "pkg":
+            it["kind"] = "pkg"
+            it["notes"].append("Instalador .pkg: si ya está instalado, se puede borrar")
+        elif root == "/data" and name == "ps5directo":
+            it["kind"] = "leftover"
+            it["notes"].append("Restos de envíos de PS5 Directo")
+        elif root == "/data" and is_dir:
+            it["kind"] = "data"
+            it["notes"].append("Datos de payloads o ajustes: bórralo solo si sabes qué es")
+        if re.search(r"\.(ps5part|ava-part|part|tmp)$", name, re.I):
+            it["kind"] = "leftover"
+            it["notes"].append("Archivo a medias de un envío")
+        if is_dir and 0 < size < 1024 * 1024 and group == "homebrew":
+            it["notes"].append("Casi vacía (%s)" % human(size))
+        items.append(it)
+    # el mismo juego dos veces (por ejemplo la carpeta y la imagen convertida a lz4)
+    by_tid = {}
+    for it in items:
+        if it["tid"]:
+            by_tid.setdefault(it["tid"].upper(), []).append(it)
+    for tid, lst in by_tid.items():
+        if len(lst) > 1:
+            for it in lst:
+                others = [x["name"] for x in lst if x is not it]
+                it["dup"] = True
+                it["notes"].append("Duplicado: %s también está en %s" % (tid, ", ".join(others[:3])))
+    names = {it["tid"].upper(): it["title"] for it in items if it["tid"] and it["title"]}
+    for it in items:
+        if not it["title"] and it["tid"] and it["tid"].upper() in names:
+            it["title"] = names[it["tid"].upper()]
+    items.sort(key=lambda x: -x["size"])
+    used = max(0, total - free)
+    known = sum(x["size"] for x in items)
+    if extra and known > used:                 # /user/app no comparte particion: no lo contamos
+        items = [x for x in items if x["kind"] != "system"]
+        known = sum(x["size"] for x in items)
+    return {"root": root, "total": total, "free": free, "used": used,
+            "other": max(0, used - known), "items": items, "t": time.time()}
+
+
+def space_start(root):
+    with LOCK:
+        if SPACE["busy"]:
+            raise E.PipeError("Ya se está analizando")
+        SPACE.update(busy=True, root=root, done=0, total=0, current="", error="")
+    SPACE_CANCEL.clear()
+
+    def run():
+        try:
+            res = space_scan(root)
+            with LOCK:
+                SPACE["result"] = res
+        except E.Cancelled:
+            with LOCK:
+                SPACE["error"] = "Cancelado"
+        except Exception as e:
+            traceback.print_exc()
+            with LOCK:
+                SPACE["error"] = str(e)
+        finally:
+            with LOCK:
+                SPACE["busy"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
 def fm_api(p, b):
+    if p == "/api/space/scan":
+        space_start(str(b.get("root") or "/data"))
+        return {}
+    if p == "/api/space/state":
+        with LOCK:
+            return {"space": dict(SPACE)}
+    if p == "/api/space/cancel":
+        SPACE_CANCEL.set()
+        return {}
     if p == "/api/fm/list":
         return fm_list(b.get("path") or "/data")
     if p == "/api/fm/du":
@@ -948,9 +1098,16 @@ def folder_job(job, src, cancel):
             setj(job, sent=v, phase="Enviando carpeta: %s" % rel[-80:])
 
     setj(job, status="enviando", total=total, sent=0, phase="Comparando con lo que ya hay en la PS5")
+    def plan(need):
+        jlog(job, "Falta por enviar: %s" % human(need))
+        if free is not None and need > 0 and free - need < margin_bytes():
+            raise E.PipeError("No cabe en la PS5: faltan %s por enviar, hay %s libres y el margen es %s. "
+                              "Libera espacio y pulsa Reintentar." % (human(need), human(free), human(margin_bytes())))
+
     watch = start_space_watch(job, bf, cancel, "el envio")
     try:
-        sent, skipped, resumed = E.upload_tree(cfg, src, target, cancel, lambda m: jlog(job, m), progress)
+        sent, skipped, resumed = E.upload_tree(cfg, src, target, cancel, lambda m: jlog(job, m), progress,
+                                               on_plan=plan)
     finally:
         stop_speed.set()
         watch.set()
@@ -2057,8 +2214,10 @@ def run_speedtest(url, seconds=10):
         ideal = 1 / (1 / dl + 1 / up)
         pipe = min(both, res["both_dl"])      # lo que llegaria de verdad descargando y enviando
         res["pipe"] = pipe
-        v.append("Las dos cosas a la vez: en la practica llegarian unos %.1f MB/s a la PS5. Con una "
-                 "sola radio Wi-Fi lo maximo esperable seria unos %.1f MB/s." % (pipe / mb, ideal / mb))
+        v.append("Las dos cosas a la vez: en la practica llegarian unos %.1f MB/s a la PS5." % (pipe / mb))
+        if dl >= 5 * mb:
+            # solo tiene sentido cuando el enlace no es el cuello de botella
+            v.append("Con una sola radio Wi-Fi lo maximo esperable seria unos %.1f MB/s." % (ideal / mb))
         if dl < 5 * mb:
             v.append("Aqui manda el alojamiento: mientras de tan poca velocidad, nada de tu lado "
                      "lo va a mejorar.")
@@ -2155,6 +2314,90 @@ UPDATE_EXTS = (".py", ".html", ".txt", ".bat", ".vbs", ".ico", ".js", ".json", "
 
 def _ver_tuple(v):
     return tuple(int(x) for x in re.findall(r"\d+", v or "0")[:4])
+
+
+def _changelog(lang):
+    """{version: [novedades]} sacado de LEEME.txt (es) o README_EN.txt (en)."""
+    fn = "README_EN.txt" if lang == "en" else "LEEME.txt"
+    try:
+        with open(os.path.join(HERE, fn), encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except Exception:
+        return {}
+    out, cur, item = {}, None, None
+    in_en = False
+    for ln in lines:
+        if lang == "en":
+            if ln.startswith("WHAT'S NEW"):
+                in_en = True
+                continue
+            if not in_en:
+                continue
+            if ln.strip() == "" and cur:
+                break
+            m = re.match(r"^(\d+\.\d+(?:\.\d+)?)\s+(.*)$", ln)
+            if m:
+                cur = m.group(1)
+                out[cur] = []
+                rest = m.group(2).strip()
+                item = None
+                ln = "      " + rest
+        else:
+            m = re.match(r"^NOVEDADES (\d+\.\d+(?:\.\d+)?)\s*$", ln)
+            if m:
+                cur = m.group(1)
+                out[cur] = []
+                item = None
+                continue
+            if cur and ln.strip() == "":
+                cur = None
+                continue
+        if not cur:
+            continue
+        t = ln.strip()
+        if t.startswith("- "):
+            out[cur].append(t[2:])
+        elif t and out[cur]:
+            out[cur][-1] += " " + t
+        elif t:
+            out[cur].append(t)
+    return out
+
+
+def whats_new(lang):
+    """Novedades que ensenar tras actualizar (vacio si no toca)."""
+    with LOCK:
+        seen = SETTINGS.get("seen_version") or ""
+        tour_done = SETTINGS.get("tour_done")
+    cur = _ver_tuple(VERSION)
+    if seen and _ver_tuple(seen) >= cur:
+        return {"show": False}
+    if not seen:
+        if not tour_done:                     # instalacion nueva: ya ve la guia de bienvenida
+            with LOCK:
+                SETTINGS["seen_version"] = VERSION
+            save_settings()
+            return {"show": False}
+        # venia de una version sin este aviso: la anterior es la copia en .backup
+        prev = None
+        try:
+            for d in os.listdir(os.path.join(HERE, ".backup")):
+                if re.match(r"^\d+(\.\d+)+$", d) and _ver_tuple(d) < cur:
+                    if prev is None or _ver_tuple(d) > _ver_tuple(prev):
+                        prev = d
+        except Exception:
+            pass
+        seen = prev
+    log = _changelog(lang)
+    pad = lambda t: (t + (0, 0, 0))[:3]
+    entries = []
+    for v, items in log.items():
+        vt = pad(_ver_tuple(v))
+        if vt <= pad(cur) and (seen is None and vt[:2] == pad(cur)[:2] or seen is not None and vt > pad(_ver_tuple(seen))):
+            if items:
+                entries.append({"version": v, "items": items})
+    entries.sort(key=lambda e: _ver_tuple(e["version"]), reverse=True)
+    return {"show": bool(entries), "version": VERSION, "entries": entries[:6]}
 
 
 def install_zip(data):
@@ -2331,6 +2574,14 @@ class Handler(BaseHTTPRequestHandler):
             url = str(b.get("url") or "").strip()
             if not re.match(r"^https?://", url, re.I) or len(url) > 4000:
                 return self._send(400, {"ok": False, "error": "enlace no valido"})
+            # cookies y navegador que usa ese alojamiento: el servidor nos dara la misma
+            # velocidad y el mismo permiso que al navegador (sesion, cuenta premium)
+            cookies = b.get("cookies") if isinstance(b.get("cookies"), dict) else {}
+            for u in (url, str(b.get("original") or "")):
+                if re.match(r"^https?://", u, re.I):
+                    host = urllib.parse.urlparse(u).netloc.lower()
+                    E.set_browser_headers(u, str(cookies.get(host) or ""), str(b.get("ua") or ""),
+                                          str(b.get("referrer") or ""))
             with LOCK:
                 if not any(x["url"] == url for x in INBOX):
                     INBOX.append({"url": url, "name": str(b.get("name") or "")[:300], "t": time.time()})
@@ -2381,6 +2632,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"ok": False, "error": str(e)})
             restart_soon()
             return self._send(200, {"ok": True, "version": ver})
+        if p == "/api/whatsnew":
+            return self._send(200, dict(ok=True, **whats_new("en" if b.get("lang") == "en" else "es")))
+        if p == "/api/whatsnew/seen":
+            with LOCK:
+                SETTINGS["seen_version"] = VERSION
+            save_settings()
+            return self._send(200, {"ok": True})
         if p == "/api/settings":
             with LOCK:
                 for k, v in b.items():
@@ -2394,6 +2652,13 @@ class Handler(BaseHTTPRequestHandler):
                                 continue
                         elif isinstance(DEFAULTS[k], list):
                             v = [x.strip() for x in (v or []) if str(x).strip()]
+                        if k == "ps5_ip":
+                            # "ftp://192.168.1.50:2121", con espacios o comas: dejar solo la IP
+                            v, port = E.clean_host(v)
+                            if port and port != int(b.get("bf_port") or SETTINGS.get("bf_port", 5905)):
+                                SETTINGS["ftp_port"] = port
+                                if "ftp_port" in b:
+                                    b["ftp_port"] = port
                         SETTINGS[k] = v
             save_settings()
             return self._send(200, {"ok": True})
@@ -2409,7 +2674,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 bases = ["/data/homebrew"]
             return self._send(200, {"ok": True, "dests": [b for b in bases if b.endswith("homebrew")]})
-        if p.startswith("/api/fm/") or p in ("/api/pick", "/api/history", "/api/history/clear"):
+        if p.startswith("/api/fm/") or p.startswith("/api/space/") or p in ("/api/pick", "/api/history", "/api/history/clear"):
             try:
                 return self._send(200, dict(ok=True, **fm_api(p, b)))
             except E.PipeError as e:

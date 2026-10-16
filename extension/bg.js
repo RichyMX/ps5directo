@@ -44,11 +44,24 @@ async function handle(item) {
     chrome.action.setBadgeText({ text: "off" });
     return;
   }
+  // Como los gestores de descargas: pasamos las cookies de ese alojamiento (sesion, cuenta
+  // premium), el navegador y la pagina de origen, para que el servidor nos trate igual.
+  // Solo van a PS5 Directo en este PC (127.0.0.1), a ningun otro sitio.
+  const cookies = {};
+  for (const u of [url, item.url]) {
+    try {
+      const host = new URL(u).host.toLowerCase();
+      if (host in cookies) continue;
+      const list = await chrome.cookies.getAll({ url: u });
+      cookies[host] = list.map(c => `${c.name}=${c.value}`).join("; ");
+    } catch (e) { /* sin permiso o enlace raro: sin cookies */ }
+  }
   try {
     const r = await fetch(`http://127.0.0.1:${app.port}/api/ext/capture`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, original: item.url, name })
+      body: JSON.stringify({ url, original: item.url, name, cookies,
+                             ua: navigator.userAgent, referrer: item.referrer || "" })
     });
     if (!r.ok) return;
   } catch (e) { return; }

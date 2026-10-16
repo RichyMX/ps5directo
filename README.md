@@ -11,10 +11,12 @@ A Windows file-transfer tool for jailbroken PS5 consoles. It sends files to the 
 - ✅ Fixes the file permissions that stop BFpilot-extracted content from launching (CE-107750-0)
 - ✅ Pause, resume and retry where it left off, even after a dropped connection
 - ✅ Built-in console file browser: sizes, copy, move, rename, delete, download to PC, upload
+- ✅ Storage view: a pie chart of what fills the console, by game name and size, flagging duplicates and leftovers you can delete
 - ✅ Send whole PC folders over several connections, skipping what's already there and resuming what got cut off
 - ✅ Watches free space so the console never fills up
 - ✅ Speed limit and built-in speed test
-- ✅ Optional browser extension: links arrive by themselves, no copy and paste
+- ✅ Download-manager style downloads: several reused connections per file, auto-backoff when a host complains
+- ✅ Optional browser extension: links arrive by themselves with your browser session (same speed and access as the browser)
 - ✅ Drag and drop, or "Send to" from Explorer
 - ✅ Welcome guide, one-click updates, English and Spanish
 
