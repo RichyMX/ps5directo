@@ -1,5 +1,6 @@
-PS5 DIRECTO 1.14
+PS5 DIRECTO 1.15
 ================
+(English: see README_EN.txt)
 
 Pega los enlaces (o arrastra archivos de tu PC) y la herramienta hace todo sola:
 
@@ -142,6 +143,10 @@ de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
 
+NOVEDADES 1.15
+- Inglés: botón "English" / "Español" arriba. La primera vez elige solo
+  según el idioma de Windows. La extensión del navegador también.
+
 NOVEDADES 1.14.1
 - Busca las actualizaciones en github.com/jstrdev/ps5directo sin tener
   que configurar nada.
@@ -210,8 +215,8 @@ NOVEDADES 1.8
 -------------
 - Mientras descomprime ves "leido del RAR X de Y" (lo que BFpilot ha
   procesado del comprimido) y "descomprimido" (lo que ocupa de verdad en
-  la PS5). Una aplicación en formato carpeta puede ocupar varias veces el RAR:
-  Lost Records, 35 GB de RAR -> 145 GB de carpeta.
+  la PS5). Una aplicación en formato carpeta puede ocupar varias veces el RAR
+  (por ejemplo, 35 GB de RAR -> 145 GB de carpeta).
 - Las previsiones de espacio cuentan con hasta ~5 veces el tamano del RAR.
 - Si el RAR trae la aplicación dentro de una carpeta, se coloca igual como
   TITLEID-app.
