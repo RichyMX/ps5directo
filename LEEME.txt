@@ -1,0 +1,263 @@
+PS5 DIRECTO 1.14
+================
+
+Pega los enlaces (o arrastra archivos de tu PC) y la herramienta hace todo sola:
+
+  1. Descarga los archivos y los manda a la PS5 por FTP mientras bajan
+     (nada se guarda en el disco del PC).
+  2. Une las partes troceadas (.001, .002...) en un solo archivo.
+  3. Pide a BFpilot que descomprima el RAR/7z/ZIP DENTRO de la consola,
+     probando las contraseñas que conozca.
+  4. Busca la carpeta de la aplicación (la que tiene sce_sys) y la deja en
+     /data/homebrew, donde ShadowMountPlus la detecta sola.
+  5. Borra los comprimidos de la PS5.
+
+Mientras una transferencia se descomprime en la PS5, la siguiente de la cola ya se
+va enviando.
+
+ALTERNATIVA: DESCOMPRIMIR EN EL PC (7-Zip)
+  En "Dónde descomprimir" elige "En el PC (7-Zip)" (o ponlo por defecto en
+  Ajustes). Entonces:
+  - Los enlaces se bajan antes al PC (carpeta temporal de Ajustes; hace
+    falta sitio para el RAR, no para lo descomprimido). Tus archivos locales se
+    usan tal cual y nunca se borran.
+  - 7-Zip descomprime sobre la marcha y la app manda cada archivo ya
+    suelto a la PS5. Lo descomprimido NO se escribe en el PC.
+  - Cada archivo se comprueba con su CRC antes de darlo por bueno.
+  - En la PS5 solo ocupa el contenido final (sin el RAR al lado) y se
+    sabe exacto antes de empezar.
+  - Pega: por el Wi-Fi viaja todo sin comprimir (puede ser 3-4 veces
+    más que el RAR), así que tarda más en enviarse.
+  - Pausar/Reintentar sigue por el archivo donde iba.
+  Necesita 7-Zip instalado (gratis, 7-zip.org). No necesita BFpilot.
+
+
+LO QUE NECESITAS
+----------------
+Esta guía no explica cómo hacer el jailbreak: das por hecho que tu PS5 ya
+lo tiene y que sabes cargar payloads (.elf).
+
+EN EL PC
+- Windows 10 u 11.
+- Python 3.9 o superior: https://www.python.org/downloads/
+  Al instalarlo marca "Add python.exe to PATH".
+- 7-Zip (solo si usas "Descomprimir en el PC"): https://www.7-zip.org/
+
+EN LA PS5 (se cargan como payloads, por ejemplo con Payload Manager:
+https://github.com/itsPLK/ps5-payload-manager )
+- Un servidor FTP. El de referencia es ftpsrv (puerto 2121):
+  https://github.com/ps5-payload-dev/ftpsrv
+  Muchos menús de payloads ya lo traen. Si el tuyo usa otro puerto,
+  cámbialo en Ajustes.
+- BFpilot (puerto 5905): descomprime dentro de la consola, mueve y borra.
+  Descarga bfpilot.elf de: https://github.com/ItsBlurf/BFpilot/releases
+  Si no está cargado, el programa espera a que lo cargues. En el modo
+  "Descomprimir en el PC" no hace falta.
+- ShadowMountPlus: es el que hace que las aplicaciones de /data/homebrew
+  aparezcan en el menú de la PS5:
+  https://github.com/drakmor/ShadowMountPlus
+
+Para comprobar que todo está bien: Ajustes > "Revisión completa".
+
+
+SOBRE BFPILOT Y LOS PERMISOS (importante si lo usas por tu cuenta)
+-----------------------------------------------------------------
+Hasta su versión 0.4.4 al menos, cuando BFpilot descomprime un RAR, 7z o
+ZIP deja los archivos sin permiso de ejecución, y la PS5 se niega a abrir
+la aplicación (error CE-107750-0). Pasa también si descomprimes desde la web de
+BFpilot, sin PS5 Directo.
+- PS5 Directo lo arregla solo después de cada descompresión.
+- Para lo que ya tenías en la consola: Ajustes > "Reparar permisos".
+- A mano: en FileZilla, clic derecho en la carpeta de la aplicación >
+  Permisos de archivo > 777 > "Recurrir a subdirectorios".
+
+
+PRIMERA VEZ
+-----------
+Doble clic en "Crear accesos directos.bat". Crea:
+  - Un icono "PS5 Directo" en el escritorio.
+  - "Enviar a > PS5 Directo" en el clic derecho de los archivos.
+Desde entonces abre PS5 Directo con el icono del escritorio: sale en su
+propia ventana, sin pestañas y sin ventana negra.
+
+(Si algo falla al abrir, usa "Iniciar PS5 Directo.bat": es lo mismo pero
+con la ventana negra, donde se ven los errores. Registro sin ventana:
+%USERPROFILE%\.ps5directo\ps5directo.log)
+
+Si cierras la ventana con trabajos en marcha, siguen en segundo plano.
+Vuelve a abrir PS5 Directo para verlos. El botón "Salir" lo cierra del
+todo (lo que esté a medias sigue luego con "Reintentar").
+
+
+CÓMO SE USA
+-----------
+1. Descomprime esta carpeta donde quieras.
+2. Abre PS5 Directo con el icono del escritorio.
+3. La primera vez se abre Ajustes: pon la IP de tu PS5 (la ves en la
+   PS5 en Ajustes > Red > Ver estado de la conexión), pulsa "Guardar" y
+   "Probar conexión". Los dos puntos de arriba deben ponerse en verde.
+4. Pega los enlaces directos (todas las partes juntas, en el
+   orden que sea) y pulsa "Añadir a la cola".
+   - Si sabes la contraseña, escríbela. Si no, prueba las de Ajustes y
+     lo que vaya entre corchetes en el nombre del archivo, como [WEB.COM].
+   - También vale la ruta de un archivo que ya tengas en el PC.
+
+5. ARCHIVOS DEL PC SIN COPIAR RUTAS:
+   - Arrastra uno o varios archivos sobre el icono del escritorio.
+   - O clic derecho en los archivos > Enviar a > PS5 Directo.
+   Si PS5 Directo ya está abierto, se añaden a su cola.
+   - O suéltalos en la página del navegador: PS5 Directo los busca en
+     tu PC por nombre y tamaño y pone sus rutas en el cuadro de enlaces.
+
+
+PAUSA, LÍMITE Y ESPACIO
+-----------------------
+- "Pausar" detiene el envío; "Reanudar" sigue donde iba.
+- Ajustes > Límite de velocidad (MB/s): para usar internet mientras envía.
+  Se aplica al momento. 0 = sin límite.
+- Ajustes > Dejar siempre libre (GB, 25 por defecto): antes de empezar
+  comprueba que cabe lo que falta por enviar, y mientras envía o
+  descomprime vigila el espacio. Si baja de ese margen, lo para todo
+  antes de que la PS5 se llene. Libera espacio y pulsa Reintentar.
+- Algunos alojamientos de archivos limitan las conexiones: con ellos usa
+  solo 2 por archivo, y menos si el servidor empieza a dar errores.
+
+
+ACTUALIZAR Y EXTENSIÓN
+----------------------
+- Botón "Actualizar" (arriba): si el programa tiene un repositorio de
+  GitHub configurado, busca la versión nueva y la instala. Si no, te
+  deja elegir el .zip de la versión nueva. Guarda una copia de la versión
+  anterior en la carpeta .backup.
+- Botón "Extensión" (arriba): abre la carpeta de la extensión para
+  Chrome/Edge y las instrucciones. Con ella, al pulsar Descargar en una
+  web, el enlace va directo a PS5 Directo sin copiar y pegar.
+
+
+TEST DE VELOCIDAD
+-----------------
+En una transferencia pausada o terminada, "Test de velocidad" mide (unos 30 s):
+descarga sola, envio PC -> PS5 solo y las dos cosas a la vez, y te dice
+de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
+Ajustes.
+
+
+NOVEDADES 1.14
+- Guía de bienvenida la primera vez que se abre: enseña para qué es cada
+  parte. Se puede volver a ver con el botón "Guía" de arriba.
+
+NOVEDADES 1.13.1
+- El logo de la cabecera va dentro de la página (al actualizar desde una
+  versión anterior no se copiaba y salía roto).
+
+NOVEDADES 1.13
+- Icono nuevo y fondo con símbolos. Para que el icono nuevo salga en el
+  escritorio, vuelve a ejecutar "Crear accesos directos.bat".
+
+NOVEDADES 1.12.1
+- Textos más neutros: "transferencias" y "aplicaciones", como una
+  herramienta de transferencia de archivos.
+
+NOVEDADES 1.12
+- Botones "Actualizar" y "Extensión" en la pantalla principal. Si hay
+  versión nueva en GitHub, el botón lo avisa.
+- La primera vez pide la IP de la PS5 (ya no trae una puesta).
+- Guía de lo que hace falta y de dónde sacarlo (arriba).
+
+NOVEDADES 1.11
+- ARREGLO IMPORTANTE: lo descomprimido con BFpilot no arrancaba
+  (CE-107750-0). Su unrar deja los archivos con los permisos que trae el
+  RAR (666/444, sin permiso de ejecución). Ahora PS5 Directo les pone 777
+  justo al colocarlos, y lo apunta en el registro.
+- Ajustes > "Reparar permisos": arregla las aplicaciones que ya tienes en la
+  consola (los que pasaste antes con BFpilot) sin volver a bajarlos.
+- Modo PC: si BFpilot no está cargado, lo coloca por FTP (ya no
+  hace falta BFpilot para nada en ese modo).
+
+NOVEDADES 1.10.1
+- En el modo PC los pasos son "Bajar al PC → Descomprimir y enviar → Colocar
+  → Listo", y dice por qué archivo va (37 de 129...).
+
+NOVEDADES 1.10
+- Nueva opción: descomprimir en el PC con 7-Zip y mandar el contenido ya
+  suelto, comprobado archivo a archivo (ver arriba).
+- La "Revisión completa" dice si encuentra 7-Zip.
+
+NOVEDADES 1.9
+-------------
+- EXTENSION PARA CAPTURAR ENLACES (Chrome o Edge), en la carpeta "extension":
+    1. Abre chrome://extensions (o edge://extensions).
+    2. Activa "Modo de desarrollador" (arriba a la derecha).
+    3. "Cargar descomprimida" y elige la carpeta "extension" de PS5 Directo.
+  Desde entonces, pasa el captcha y pulsa Descargar como siempre: si es un
+  .rar/.7z/.zip/.pkg y PS5 Directo esta abierto, el enlace bueno (despues de
+  redirecciones) aparece en el cuadro de enlaces y el navegador NO descarga
+  nada. Cuando esten todas las partes, pulsa "Anadir a la cola".
+  Si PS5 Directo esta cerrado, la descarga sigue normal. Se apaga y enciende
+  desde su icono.
+- ACTUALIZAR: Ajustes > "Instalar actualizacion (.zip)": eliges el zip nuevo y
+  se instala solo, guarda copia de la version anterior en .backup y se
+  reinicia. Si algun dia lo subes a GitHub, pon "usuario/repositorio" y el
+  boton "Buscar actualizacion" lo descarga de las releases.
+- La version sale arriba, junto al titulo, y en el nombre de la ventana.
+
+
+NOVEDADES 1.8
+-------------
+- Mientras descomprime ves "leido del RAR X de Y" (lo que BFpilot ha
+  procesado del comprimido) y "descomprimido" (lo que ocupa de verdad en
+  la PS5). Una aplicación en formato carpeta puede ocupar varias veces el RAR:
+  Lost Records, 35 GB de RAR -> 145 GB de carpeta.
+- Las previsiones de espacio cuentan con hasta ~5 veces el tamano del RAR.
+- Si el RAR trae la aplicación dentro de una carpeta, se coloca igual como
+  TITLEID-app.
+- La version aparece arriba, junto al titulo.
+
+
+NOVEDADES 1.7
+-------------
+- Ajustes > Revision completa: comprueba FTP, escritura, BFpilot, formatos
+  y espacio, y dice que hacer si algo falla.
+- Ajustes > Limpieza de la PS5: busca restos en /data/ps5directo, ensena
+  cuanto ocupan y los borra (nunca toca nada fuera de esa carpeta).
+- Aviso si el Title ID ya existe en /data/homebrew o en un USB/externo.
+- Destino: sugiere /mnt/usbX/homebrew si hay unidades conectadas.
+- Ajustes > Hilos al descomprimir (0 = automatico). Si una descompresion
+  se cuelga, prueba con 1.
+- Si la descompresion no da senales de vida en 5 min, lo avisa.
+- Aviso de Windows al terminar o fallar (acepta el permiso la 1a vez).
+
+
+SI ALGO FALLA
+-------------
+- Se corta la red o el FTP: reintenta solo y continúa donde se quedó.
+- Cierras el programa a medias: al abrirlo, pulsa "Reintentar".
+  Continúa desde lo que ya había en la consola.
+- Contraseña incorrecta: pulsa "Reintentar" y escríbela.
+  No se vuelve a descargar nada.
+- "Ya existe": no pisa nada que ya tengas. Bórralo o renómbralo y
+  pulsa "Reintentar".
+- Los archivos de trabajo están en /data/ps5directo (fuera de las
+  carpetas que escanea ShadowMountPlus).
+
+
+ENLACES
+-------
+Funcionan los enlaces de descarga directa. Pixeldrain, Dropbox y algunos
+de Mediafire y Google Drive se convierten solos. Las páginas que piden
+captcha o iniciar sesión no funcionan: copia el enlace final de descarga.
+
+Los .pkg se dejan en /data/pkg para instalarlos con ps5upload.
+Las imágenes (.exfat, .ffpkg, .ffpfsc) van a /data/homebrew.
+
+Ajustes y cola se guardan en  %USERPROFILE%\.ps5directo
+
+
+AVISO
+-----
+PS5 Directo es un programa independiente, sin relación con Sony ni con
+los autores de BFpilot, ftpsrv o ShadowMountPlus. Es una herramienta de
+transferencia de archivos: no incluye contenido de terceros, claves ni
+archivos de Sony, ni enlaces a sitios de descargas. Úsalo solo con
+contenido que tengas derecho a usar (tus copias de seguridad y homebrew).
+Cada uno es responsable de lo que transfiere.
