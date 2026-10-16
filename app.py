@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.18.1"
+VERSION = "1.18.2"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
 DEFAULT_REPO = "jstrdev/ps5directo"
@@ -55,6 +55,8 @@ DEFAULTS = {
     "delete_archives": True,
     "tour_done": False,       # la guia de bienvenida ya se vio
     "seen_version": "",       # ultima version cuyas novedades ya se ensenaron
+    "shortcut_done": False,   # ya se creo el acceso directo del escritorio una vez
+    "icon_ver": "",           # version cuyo icono ya se dejo en la cache de la ventana
 }
 
 LOCK = threading.RLock()
@@ -2561,7 +2563,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/logo.svg":
             with open(os.path.join(HERE, "web", "logo.svg"), "rb") as f:
                 return self._send(200, f.read(), "image/svg+xml")
-        if self.path == "/favicon.ico":
+        if self.path.startswith("/icon-") and self.path.split("?")[0].endswith(".png"):
+            n = re.sub(r"\D", "", self.path.split("?")[0])
+            fp = os.path.join(HERE, "web", "icon-%s.png" % n)
+            if n and os.path.isfile(fp):
+                with open(fp, "rb") as f:
+                    return self._send(200, f.read(), "image/png")
+        if self.path.split("?")[0] == "/manifest.webmanifest":
+            man = {"name": "PS5 Directo", "short_name": "PS5 Directo", "display": "standalone",
+                   "background_color": "#0f1115", "theme_color": "#0f1115", "start_url": "/",
+                   "icons": [{"src": "/icon-%d.png?v=%s" % (n, VERSION), "sizes": "%dx%d" % (n, n),
+                              "type": "image/png"} for n in (192, 256, 512)]}
+            return self._send(200, json.dumps(man).encode(), "application/manifest+json")
+        if self.path.split("?")[0] == "/favicon.ico":
             with open(os.path.join(HERE, "web", "ps5directo.ico"), "rb") as f:
                 return self._send(200, f.read(), "image/x-icon")
         if self.path in ("/", "/index.html") or self.path.startswith("/?"):
@@ -2581,7 +2595,7 @@ class Handler(BaseHTTPRequestHandler):
                     d["has_password"] = bool(j.get("password"))
                     d["pcx"] = (j.get("info") or {}).get("mode") == "pcx"
                     jobs.append(d)
-                st = {"ok": True, "version": VERSION, "settings": dict(SETTINGS), "jobs": jobs,
+                st = {"ok": True, "version": VERSION, "home": HERE, "settings": dict(SETTINGS), "jobs": jobs,
                       "inbox": len(INBOX), "repo": SETTINGS.get("update_repo") or DEFAULT_REPO}
             st["settings"].pop("ftp_pass", None)
             return self._send(200, st)
@@ -2907,18 +2921,43 @@ def dropped_paths():
     return out
 
 
-def running_session():
-    """Devuelve (url_base, token) si ya hay un PS5 Directo funcionando."""
+def running_session(full=False):
+    """Devuelve (url_base, token) si ya hay un PS5 Directo funcionando
+    (con full=True, (url_base, token, estado))."""
     try:
         with open(SESSION_FILE, encoding="utf-8") as f:
             ses = json.load(f)
         base = "http://127.0.0.1:%d" % int(ses["port"])
         req = urllib.request.Request(base + "/api/state", headers={"X-Token": ses["token"]})
         with urllib.request.urlopen(req, timeout=3) as r:
-            json.load(r)
-        return base, ses["token"]
+            st = json.load(r)
+        return (base, ses["token"], st) if full else (base, ses["token"])
     except Exception:
         return None
+
+
+def replace_other_version(ses):
+    """Si lo que ya esta abierto es OTRA version (o la de otra carpeta, por ejemplo una copia
+    vieja del escritorio) y no tiene nada en marcha, la cierra para abrir esta.
+    Devuelve True si se cerro."""
+    base, token, st = ses
+    if st.get("version") == VERSION and st.get("home", HERE) == HERE:
+        return False
+    for j in st.get("jobs") or []:
+        if j.get("status") not in ("hecho", "error", "cancelado", "pausado"):
+            return False                      # esta trabajando: no se le corta
+    try:
+        req = urllib.request.Request(base + "/api/quit", data=b"{}",
+                                     headers={"X-Token": token, "Content-Type": "application/json"})
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception:
+        pass
+    for _ in range(40):
+        time.sleep(0.25)
+        if not running_session():
+            print("Cerrada la version %s que seguia abierta" % st.get("version", "antigua"))
+            return True
+    return False
 
 
 def forward_to_running(ses, paths):
@@ -2965,6 +3004,70 @@ def open_window(url):
     return None
 
 
+def _powershell(script, timeout=30):
+    import subprocess
+    return subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                          capture_output=True, text=True, timeout=timeout,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def ensure_shortcuts():
+    """Acceso directo "PS5 Directo" en el escritorio y en "Enviar a", con el icono del programa.
+    Se crea la primera vez; despues solo se corrige si apunta a otra carpeta (una copia vieja)."""
+    if os.name != "nt":
+        return
+    try:
+        vbs = os.path.join(HERE, "PS5 Directo.vbs")
+        ico = os.path.join(HERE, "web", "ps5directo.ico")
+        if not os.path.isfile(vbs):
+            return
+        with LOCK:
+            first = not SETTINGS.get("shortcut_done")
+        q = lambda t: "'" + t.replace("'", "''") + "'"
+        script = (
+            "$w=New-Object -ComObject WScript.Shell; $first=$%s;"
+            "foreach($f in @([Environment]::GetFolderPath('Desktop'), [Environment]::GetFolderPath('SendTo'))){"
+            " $p=Join-Path $f 'PS5 Directo.lnk'; $ex=Test-Path -LiteralPath $p;"
+            " $l=$w.CreateShortcut($p);"
+            " $want='\"'+%s+'\"';"
+            " if($ex -and $l.Arguments -eq $want -and $l.IconLocation -like ('*'+%s+'*')){continue}"
+            " if(-not $ex -and -not $first){continue}"
+            " if($ex -and $l.Arguments -notlike '*PS5 Directo.vbs*'){continue}"
+            " $l.TargetPath=(Join-Path $env:WINDIR 'System32\\wscript.exe'); $l.Arguments=$want;"
+            " $l.WorkingDirectory=%s; $l.IconLocation=%s+',0'; $l.Description='PS5 Directo'; $l.Save();"
+            " 'ok '+$p }"
+        ) % ("true" if first else "false", q(vbs), q(ico), q(HERE), q(ico))
+        r = _powershell(script)
+        if r.stdout.strip():
+            print("Acceso directo:", r.stdout.strip().replace("\n", " | "))
+        if r.returncode == 0 and first:
+            with LOCK:
+                SETTINGS["shortcut_done"] = True
+            save_settings()
+    except Exception as e:
+        print("No se pudo crear el acceso directo:", e)
+
+
+def refresh_window_icon():
+    """La ventana guarda el icono en su cache: tras actualizar se borra para que la barra
+    de tareas enseñe el icono actual y no el de una version vieja."""
+    with LOCK:
+        if SETTINGS.get("icon_ver") == VERSION:
+            return
+        SETTINGS["icon_ver"] = VERSION
+    save_settings()
+    prof = os.path.join(DATA_DIR, "ventana")
+    for sub in ("Default", ""):
+        for name in ("Favicons", "Favicons-journal"):
+            try:
+                os.remove(os.path.join(prof, sub, name))
+            except OSError:
+                pass
+    import shutil
+    for d in ("Web Applications", os.path.join("Default", "Web Applications")):
+        shutil.rmtree(os.path.join(prof, d), ignore_errors=True)
+
+
 def busy():
     with LOCK:
         return any(j["status"] not in ("hecho", "error", "cancelado", "pausado") for j in JOBS)
@@ -2997,8 +3100,11 @@ def main():
             if not running_session():
                 break
             time.sleep(0.5)
-    ses = running_session()
+    ses = running_session(full=True)
+    if ses and replace_other_version(ses):
+        ses = None
     if ses:
+        ses = ses[:2]
         if paths:
             forward_to_running(ses, paths)
             print("Anadido a la cola de PS5 Directo (ya estaba abierto)")
@@ -3021,6 +3127,8 @@ def main():
             json.dump({"port": srv.server_address[1], "token": TOKEN}, f)
     except Exception:
         pass
+    threading.Thread(target=ensure_shortcuts, daemon=True).start()
+    refresh_window_icon()
     url = "http://127.0.0.1:%d/#t=%s" % (srv.server_address[1], TOKEN)
     print("PS5 Directo %s" % VERSION)
     print("Abre en el navegador: %s" % url)

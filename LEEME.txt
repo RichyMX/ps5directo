@@ -1,5 +1,5 @@
-PS5 DIRECTO 1.18
-================
+PS5 DIRECTO 1.18.2
+==================
 (English: see README_EN.txt)
 
 Pega los enlaces (o arrastra archivos de tu PC) y la herramienta hace todo sola:
@@ -167,6 +167,14 @@ descarga sola, envio PC -> PS5 solo y las dos cosas a la vez, y te dice
 de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
+
+NOVEDADES 1.18.2
+- Crea automáticamente un acceso directo "PS5 Directo" en el escritorio (y en "Enviar a")
+  con el icono del programa. Si lo borras no vuelve a aparecer; si apuntaba a
+  una copia vieja del programa, se corrige.
+- La barra de tareas enseña el icono nuevo mientras el programa está abierto.
+- Si se había quedado abierta una versión antigua (por ejemplo una copia vieja
+  en otra carpeta), al abrir esta se cierra la vieja sola en vez de enseñarla.
 
 NOVEDADES 1.18.1
 - Al borrar algo grande se ve cuánto se ha liberado y el tiempo que lleva, y el

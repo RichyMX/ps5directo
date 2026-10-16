@@ -1,5 +1,5 @@
-PS5 DIRECTO 1.18 — USER GUIDE (English)
-=======================================
+PS5 DIRECTO 1.18.2 — USER GUIDE (English)
+=========================================
 
 Paste links (or drag files from your PC) and the tool does the rest:
 
@@ -220,6 +220,11 @@ Settings and queue are stored in  %USERPROFILE%\.ps5directo
 
 WHAT'S NEW
 ----------
+1.18.2 - Creates a "PS5 Directo" shortcut on the desktop (and in "Send to")
+        with the program's icon. If you delete it, it won't come back; if it
+        pointed to an old copy, it's fixed. The taskbar shows the new icon.
+        If an old version was still open (e.g. an old copy in another folder),
+        it's closed automatically instead of being shown.
 1.18.1 - When deleting something big you see how much has been freed and how
         long it has taken, and the browser's free space updates meanwhile.
 1.18  - "Space" tab: a pie chart and list of everything that takes up space
