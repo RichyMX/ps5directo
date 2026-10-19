@@ -22,7 +22,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import engine as E  # noqa: E402
 
-VERSION = "1.18.2"
+VERSION = "1.18.3"
 # Repositorio de GitHub donde se publican las versiones (usuario/nombre). Si lo rellenas,
 # todas las copias buscan actualizaciones ahi sin tener que configurar nada.
 DEFAULT_REPO = "jstrdev/ps5directo"
@@ -2893,10 +2893,48 @@ def locate_files(files, budget=12.0, max_depth=6):
     return found
 
 
+class Server(ThreadingHTTPServer):
+    """En Windows, SO_REUSEADDR deja que DOS programas escuchen en el mismo puerto y las
+    peticiones se reparten al azar entre los dos ("Failed to fetch", la cola que aparece y
+    desaparece). Aqui el puerto es exclusivo."""
+    allow_reuse_address = os.name != "nt"
+    daemon_threads = True
+
+    def server_bind(self):
+        if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
+LOCK_PORT = 8776
+_instance_lock = []
+
+
+def take_instance_lock(wait=0.0):
+    """Solo un PS5 Directo a la vez: se queda con un puerto fijo mientras funciona.
+    Devuelve False si otro ya lo tiene (tras esperar hasta `wait` segundos)."""
+    end = time.time() + wait
+    while True:
+        s = socket.socket()
+        try:
+            if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            s.bind(("127.0.0.1", LOCK_PORT))
+            _instance_lock.append(s)
+            return True
+        except OSError:
+            s.close()
+            if time.time() >= end:
+                return False
+            time.sleep(0.25)
+
+
 def pick_port():
     for port in (8777, 8778, 8779, 0):
         s = socket.socket()
         try:
+            if os.name == "nt" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
             s.bind(("127.0.0.1", port))
             p = s.getsockname()[1]
             s.close()
@@ -3103,6 +3141,16 @@ def main():
     ses = running_session(full=True)
     if ses and replace_other_version(ses):
         ses = None
+    if not ses and not take_instance_lock(wait=30 if "--after-update" in sys.argv else 4):
+        # otro PS5 Directo esta arrancando ahora mismo (doble clic, por ejemplo): uso ese
+        for _ in range(40):
+            ses = running_session(full=True)
+            if ses:
+                break
+            time.sleep(0.25)
+        if not ses:
+            print("Ya hay otro PS5 Directo abierto")
+            sys.exit(3)
     if ses:
         ses = ses[:2]
         if paths:
@@ -3120,7 +3168,7 @@ def main():
     for target in (transfer_worker, extract_worker):
         threading.Thread(target=target, daemon=True).start()
     port = pick_port()
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = Server(("127.0.0.1", port), Handler)
     try:
         os.makedirs(DATA_DIR, exist_ok=True)
         with open(SESSION_FILE, "w", encoding="utf-8") as f:

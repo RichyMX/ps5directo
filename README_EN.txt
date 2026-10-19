@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.18.2 — USER GUIDE (English)
+PS5 DIRECTO 1.18.3 — USER GUIDE (English)
 =========================================
 
 Paste links (or drag files from your PC) and the tool does the rest:
@@ -220,6 +220,10 @@ Settings and queue are stored in  %USERPROFILE%\.ps5directo
 
 WHAT'S NEW
 ----------
+1.18.3 - Fixed "Failed to fetch" and the queue appearing and disappearing: on
+        Windows two PS5 Directo could end up listening on the same port (e.g.
+        when opened twice in a row). Now only one can be open. Brief
+        connection hiccups are retried automatically.
 1.18.2 - Creates a "PS5 Directo" shortcut on the desktop (and in "Send to")
         with the program's icon. If you delete it, it won't come back; if it
         pointed to an old copy, it's fixed. The taskbar shows the new icon.

@@ -1,4 +1,4 @@
-PS5 DIRECTO 1.18.2
+PS5 DIRECTO 1.18.3
 ==================
 (English: see README_EN.txt)
 
@@ -167,6 +167,12 @@ descarga sola, envio PC -> PS5 solo y las dos cosas a la vez, y te dice
 de quien es la culpa cuando va lento. Tambien hay uno solo PC -> PS5 en
 Ajustes.
 
+
+NOVEDADES 1.18.3
+- Arreglado "Failed to fetch" y la cola que aparecía y desaparecía: en Windows
+  podían quedar dos PS5 Directo escuchando en el mismo puerto (por ejemplo al
+  abrirlo dos veces seguidas). Ahora solo puede haber uno abierto.
+- Si la conexión con el programa falla un instante, se reintenta sola.
 
 NOVEDADES 1.18.2
 - Crea automáticamente un acceso directo "PS5 Directo" en el escritorio (y en "Enviar a")
